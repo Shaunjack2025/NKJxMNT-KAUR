@@ -114,7 +114,7 @@ export const SupabaseConfigModal: React.FC<SupabaseConfigModalProps> = ({ isOpen
                   type="password"
                   value={anonKey}
                   onChange={(e) => setAnonKey(e.target.value)}
-                  placeholder="eyJhbGciOiJIUzI1NiIsIn..."
+                  placeholder="sb_publishable_... or eyJhbGci..."
                   className="w-full px-3 py-2 rounded-lg bg-[#0b0a14] border border-white/10 text-xs text-white font-mono outline-none focus:border-pink-500"
                 />
               </div>

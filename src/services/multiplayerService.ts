@@ -1,4 +1,4 @@
-import { supabase, isSupabaseConfigured } from '../lib/supabase';
+import { supabase, isSupabaseConfigured, getSupabase, logSupabaseDiagnostics } from '../lib/supabase';
 import type { Player, PlayerNumber, Room, RoomStatus, GameEventPayload, MoveStep } from '../types/game';
 import { savePlayerSession, getSavedSession } from '../lib/storage';
 
@@ -24,7 +24,10 @@ export class MultiplayerService {
     console.log('[NKJxMNT] CREATE ROOM START');
     console.log('[NKJxMNT] Creator Name:', creatorName);
 
-    if (!isSupabaseConfigured() || !supabase) {
+    const client = getSupabase() || supabase;
+
+    if (!isSupabaseConfigured() || !client) {
+      logSupabaseDiagnostics();
       console.error('[NKJxMNT] Cannot create room: Supabase is not configured.');
       throw new Error(
         'Supabase is not configured on this deployed site. Please ensure VITE_SUPABASE_URL and VITE_SUPABASE_ANON_KEY are set in Vercel Project Settings, then trigger a Redeploy.'
@@ -37,7 +40,7 @@ export class MultiplayerService {
     console.log('[NKJxMNT] generated room code:', roomCode);
 
     // 1. Insert room into public.rooms
-    const { data: roomData, error: roomError } = await supabase
+    const { data: roomData, error: roomError } = await client
       .from('rooms')
       .insert({
         room_code: roomCode,
@@ -63,7 +66,7 @@ export class MultiplayerService {
     console.log('[NKJxMNT] created room ID:', roomData.id);
 
     // 2. Insert Player 1 into public.players
-    const { data: playerData, error: playerError } = await supabase
+    const { data: playerData, error: playerError } = await client
       .from('players')
       .insert({
         room_id: roomData.id,
@@ -113,7 +116,10 @@ export class MultiplayerService {
     const formattedCode = roomCode.trim().toUpperCase();
     console.log('[NKJxMNT] querying room code:', formattedCode);
 
-    if (!isSupabaseConfigured() || !supabase) {
+    const client = getSupabase() || supabase;
+
+    if (!isSupabaseConfigured() || !client) {
+      logSupabaseDiagnostics();
       console.error('[NKJxMNT] Cannot join room: Supabase is not configured.');
       throw new Error(
         'Supabase is not configured on this device. Please verify your Vercel environment variables or enter your Supabase keys via the top-left badge.'
@@ -121,7 +127,7 @@ export class MultiplayerService {
     }
 
     // 1. Fetch room using select('*') and maybeSingle()
-    const { data: roomData, error: roomError } = await supabase
+    const { data: roomData, error: roomError } = await client
       .from('rooms')
       .select('*')
       .eq('room_code', formattedCode)
@@ -145,7 +151,7 @@ export class MultiplayerService {
     console.log(`[NKJxMNT] Room "${formattedCode}" found (ID: ${roomData.id}, Status: ${roomData.status})`);
 
     // 2. Fetch existing players in this room
-    const { data: playersData, error: playersError } = await supabase
+    const { data: playersData, error: playersError } = await client
       .from('players')
       .select('*')
       .eq('room_id', roomData.id);
@@ -184,7 +190,7 @@ export class MultiplayerService {
 
     // 3. Insert Player 2 into public.players
     console.log(`[NKJxMNT] Registering Player 2 "${playerName}" in room ${roomData.id}...`);
-    const { data: newPlayerData, error: playerError } = await supabase
+    const { data: newPlayerData, error: playerError } = await client
       .from('players')
       .insert({
         room_id: roomData.id,
@@ -203,7 +209,7 @@ export class MultiplayerService {
     }
 
     // 4. Update room status to 'playing'
-    const { data: updatedRoom, error: updateError } = await supabase
+    const { data: updatedRoom, error: updateError } = await client
       .from('rooms')
       .update({ status: 'playing', updated_at: new Date().toISOString() })
       .eq('id', roomData.id)
@@ -223,7 +229,7 @@ export class MultiplayerService {
     });
 
     // 5. Broadcast to room channel that Player 2 joined
-    const channel = supabase.channel(`game:${roomData.id}`);
+    const channel = client.channel(`game:${roomData.id}`);
     channel.send({
       type: 'broadcast',
       event: 'player_joined',
@@ -244,7 +250,8 @@ export class MultiplayerService {
    * Fetch current room and player state from Supabase
    */
   static async getRoomDetails(roomCode: string): Promise<{ room: Room | null; players: Player[] }> {
-    if (!isSupabaseConfigured() || !supabase) {
+    const client = getSupabase() || supabase;
+    if (!isSupabaseConfigured() || !client) {
       console.warn('[NKJxMNT] Cannot getRoomDetails: Supabase is not configured.');
       return { room: null, players: [] };
     }
@@ -252,7 +259,7 @@ export class MultiplayerService {
     const formattedCode = roomCode.trim().toUpperCase();
 
     // Query rooms table using select('*') and maybeSingle()
-    const { data: roomData, error: roomError } = await supabase
+    const { data: roomData, error: roomError } = await client
       .from('rooms')
       .select('*')
       .eq('room_code', formattedCode)
@@ -274,7 +281,7 @@ export class MultiplayerService {
     }
 
     // Query players table using select('*')
-    const { data: playersData, error: playersError } = await supabase
+    const { data: playersData, error: playersError } = await client
       .from('players')
       .select('*')
       .eq('room_id', roomData.id)
@@ -304,7 +311,8 @@ export class MultiplayerService {
     diceValue: number,
     steps: MoveStep[]
   ): Promise<void> {
-    if (!isSupabaseConfigured() || !supabase) return;
+    const client = getSupabase() || supabase;
+    if (!isSupabaseConfigured() || !client) return;
 
     const payload: GameEventPayload = {
       type: 'ROLL_DICE',
@@ -315,7 +323,7 @@ export class MultiplayerService {
       timestamp: Date.now(),
     };
 
-    const channel = supabase.channel(`game:${roomId}`);
+    const channel = client.channel(`game:${roomId}`);
     await channel.send({
       type: 'broadcast',
       event: 'dice_roll',
@@ -333,7 +341,8 @@ export class MultiplayerService {
     nextTurn: PlayerNumber,
     winnerName: string | null = null
   ): Promise<void> {
-    if (!isSupabaseConfigured() || !supabase) {
+    const client = getSupabase() || supabase;
+    if (!isSupabaseConfigured() || !client) {
       console.error('[NKJxMNT] Cannot commitMove: Supabase is not configured.');
       return;
     }
@@ -341,7 +350,7 @@ export class MultiplayerService {
     const status: RoomStatus = winnerName ? 'finished' : 'playing';
 
     // 1. Update player position in public.players
-    const { error: playerError } = await supabase
+    const { error: playerError } = await client
       .from('players')
       .update({
         position: newPosition,
@@ -354,7 +363,7 @@ export class MultiplayerService {
     }
 
     // 2. Update room state in public.rooms
-    const { error: roomError } = await supabase
+    const { error: roomError } = await client
       .from('rooms')
       .update({
         current_turn: nextTurn,
@@ -373,13 +382,14 @@ export class MultiplayerService {
    * Reset game to play again
    */
   static async resetGame(roomId: string): Promise<void> {
-    if (!isSupabaseConfigured() || !supabase) {
+    const client = getSupabase() || supabase;
+    if (!isSupabaseConfigured() || !client) {
       console.error('[NKJxMNT] Cannot resetGame: Supabase is not configured.');
       return;
     }
 
     // Reset players positions
-    const { error: playersResetError } = await supabase
+    const { error: playersResetError } = await client
       .from('players')
       .update({ position: 0, updated_at: new Date().toISOString() })
       .eq('room_id', roomId);
@@ -389,7 +399,7 @@ export class MultiplayerService {
     }
 
     // Reset room state
-    const { error: roomResetError } = await supabase
+    const { error: roomResetError } = await client
       .from('rooms')
       .update({
         status: 'playing',
@@ -405,7 +415,7 @@ export class MultiplayerService {
     }
 
     // Broadcast restart event to room channel
-    const channel = supabase.channel(`game:${roomId}`);
+    const channel = client.channel(`game:${roomId}`);
     await channel.send({
       type: 'broadcast',
       event: 'restart_game',
@@ -425,7 +435,8 @@ export class MultiplayerService {
       onStatusChange: (status: 'connected' | 'connecting' | 'disconnected') => void;
     }
   ): () => void {
-    if (!isSupabaseConfigured() || !supabase) {
+    const client = getSupabase() || supabase;
+    if (!isSupabaseConfigured() || !client) {
       handlers.onStatusChange('disconnected');
       console.warn('[NKJxMNT] subscribeToRoom called without Supabase configuration.');
       return () => {};
@@ -433,7 +444,7 @@ export class MultiplayerService {
 
     handlers.onStatusChange('connecting');
 
-    const channel = supabase.channel(`game:${roomId}`, {
+    const channel = client.channel(`game:${roomId}`, {
       config: { broadcast: { self: false } },
     });
 
@@ -447,18 +458,19 @@ export class MultiplayerService {
       })
       .on('broadcast', { event: 'player_joined' }, async () => {
         // When Player 2 joins, immediately refetch room and players
-        if (!supabase) return;
-        const { data: playersData } = await supabase
+        const activeClient = getSupabase() || supabase;
+        if (!activeClient) return;
+        const { data: playersData } = await activeClient
           .from('players')
-          .select()
+          .select('*')
           .eq('room_id', roomId)
           .order('player_number', { ascending: true });
         if (playersData) {
           handlers.onPlayersUpdate(playersData as Player[]);
         }
-        const { data: roomData } = await supabase
+        const { data: roomData } = await activeClient
           .from('rooms')
-          .select()
+          .select('*')
           .eq('id', roomId)
           .maybeSingle();
         if (roomData) {
@@ -479,10 +491,11 @@ export class MultiplayerService {
         'postgres_changes',
         { event: '*', schema: 'public', table: 'players', filter: `room_id=eq.${roomId}` },
         async () => {
-          if (!supabase) return;
-          const { data } = await supabase
+          const activeClient = getSupabase() || supabase;
+          if (!activeClient) return;
+          const { data } = await activeClient
             .from('players')
-            .select()
+            .select('*')
             .eq('room_id', roomId)
             .order('player_number', { ascending: true });
           if (data) {
@@ -500,8 +513,9 @@ export class MultiplayerService {
       });
 
     return () => {
-      if (supabase) {
-        supabase.removeChannel(channel);
+      const activeClient = getSupabase() || supabase;
+      if (activeClient) {
+        activeClient.removeChannel(channel);
       }
     };
   }
