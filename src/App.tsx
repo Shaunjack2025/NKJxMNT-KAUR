@@ -234,6 +234,11 @@ export const App: React.FC = () => {
       // Update URL without reload
       window.history.pushState({}, '', `?room=${newRoom.room_code}`);
       setupRoomSubscription(newRoom.id);
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : 'Failed to create room';
+      console.error('[NKJxMNT] handleCreateRoom error:', err);
+      showToast(msg, 'info', 6000);
+      throw err;
     } finally {
       setIsLoading(false);
     }
@@ -255,6 +260,11 @@ export const App: React.FC = () => {
       window.history.pushState({}, '', `?room=${joinedRoom.room_code}`);
       setupRoomSubscription(joinedRoom.id);
       showToast(`${name} joined the game!`, 'info');
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : 'Failed to join room';
+      console.error('[NKJxMNT] handleJoinRoom error:', err);
+      showToast(msg, 'info', 6000);
+      throw err;
     } finally {
       setIsLoading(false);
     }

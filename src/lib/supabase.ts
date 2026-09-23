@@ -11,8 +11,8 @@ const envKey = typeof rawEnvKey === 'string' ? rawEnvKey.trim() : '';
 const storedUrl = typeof window !== 'undefined' ? (localStorage.getItem('nkj_supabase_url') || '').trim() : '';
 const storedKey = typeof window !== 'undefined' ? (localStorage.getItem('nkj_supabase_key') || '').trim() : '';
 
-export const supabaseUrl = storedUrl || envUrl;
-export const supabaseAnonKey = storedKey || envKey;
+export const supabaseUrl = envUrl || storedUrl;
+export const supabaseAnonKey = envKey || storedKey;
 
 export const isSupabaseConfigured = (): boolean => {
   return Boolean(
@@ -34,13 +34,16 @@ if (isSupabaseConfigured()) {
         },
       },
     });
-    console.log('[NKJxMNT] Supabase Client Initialized for:', supabaseUrl);
+    console.log('[NKJxMNT] Supabase Client Initialized successfully for URL:', supabaseUrl);
   } catch (err) {
     console.error('[NKJxMNT] Error initializing Supabase client:', err);
   }
 } else {
   console.warn(
-    '[NKJxMNT] Supabase credentials not found in VITE_SUPABASE_URL / VITE_SUPABASE_ANON_KEY or localStorage.'
+    '[NKJxMNT] Supabase credentials not found or incomplete. VITE_SUPABASE_URL:',
+    envUrl ? 'FOUND (' + envUrl + ')' : 'MISSING',
+    '| VITE_SUPABASE_ANON_KEY:',
+    envKey ? 'FOUND' : 'MISSING'
   );
 }
 

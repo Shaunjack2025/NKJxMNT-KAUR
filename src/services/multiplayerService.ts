@@ -20,17 +20,21 @@ export class MultiplayerService {
    * Create a new room with Player 1 in Supabase
    */
   static async createRoom(creatorName: string): Promise<{ room: Room; player: Player }> {
+    console.log('[NKJxMNT] ========================================');
+    console.log('[NKJxMNT] CREATE ROOM START');
+    console.log('[NKJxMNT] Creator Name:', creatorName);
+
     if (!isSupabaseConfigured() || !supabase) {
       console.error('[NKJxMNT] Cannot create room: Supabase is not configured.');
       throw new Error(
-        'Supabase is not configured. Please ensure VITE_SUPABASE_URL and VITE_SUPABASE_ANON_KEY are set in your Vercel Project Settings, then Redeploy. (Or click the top-left status badge to enter them).'
+        'Supabase is not configured on this deployed site. Please ensure VITE_SUPABASE_URL and VITE_SUPABASE_ANON_KEY are set in Vercel Project Settings, then trigger a Redeploy.'
       );
     }
 
     const roomCode = generateRoomCode().trim().toUpperCase();
     const sessionToken = generateSessionToken();
 
-    console.log(`[NKJxMNT] Creating room "${roomCode}" for creator "${creatorName}" in Supabase...`);
+    console.log('[NKJxMNT] generated room code:', roomCode);
 
     // 1. Insert room into public.rooms
     const { data: roomData, error: roomError } = await supabase
@@ -44,11 +48,19 @@ export class MultiplayerService {
       .single();
 
     if (roomError || !roomData) {
-      console.error('[NKJxMNT] Error creating room in Supabase:', roomError);
-      throw new Error(`Failed to create room in Supabase: ${roomError?.message || 'No data returned'}`);
+      console.error('[NKJxMNT] Supabase room insert failure:', {
+        message: roomError?.message,
+        details: roomError?.details,
+        hint: roomError?.hint,
+        code: roomError?.code,
+      });
+      throw new Error(
+        `Failed to create room in Supabase: ${roomError?.message || 'No data returned'} (Code: ${roomError?.code || 'UNKNOWN'})`
+      );
     }
 
-    console.log('[NKJxMNT] Room created successfully in Supabase with ID:', roomData.id);
+    console.log('[NKJxMNT] Supabase room insert success');
+    console.log('[NKJxMNT] created room ID:', roomData.id);
 
     // 2. Insert Player 1 into public.players
     const { data: playerData, error: playerError } = await supabase
@@ -65,11 +77,20 @@ export class MultiplayerService {
       .single();
 
     if (playerError || !playerData) {
-      console.error('[NKJxMNT] Error inserting Player 1 in Supabase:', playerError);
-      throw new Error(`Failed to create player in Supabase: ${playerError?.message || 'Database error'}`);
+      console.error('[NKJxMNT] player insert failure:', {
+        message: playerError?.message,
+        details: playerError?.details,
+        hint: playerError?.hint,
+        code: playerError?.code,
+      });
+      throw new Error(
+        `Failed to register player in Supabase: ${playerError?.message || 'Database error'} (Code: ${playerError?.code || 'UNKNOWN'})`
+      );
     }
 
-    console.log('[NKJxMNT] Player 1 registered in Supabase:', playerData.id);
+    console.log('[NKJxMNT] player insert success (Player 1 ID:', playerData.id, ')');
+    console.log('[NKJxMNT] CREATE ROOM SUCCESS');
+    console.log('[NKJxMNT] ========================================');
 
     // 3. Save session in localStorage for page refresh/reconnect
     savePlayerSession({
@@ -87,6 +108,11 @@ export class MultiplayerService {
    * Join an existing room in Supabase
    */
   static async joinRoom(roomCode: string, playerName: string): Promise<{ room: Room; player: Player }> {
+    console.log('[NKJxMNT] ========================================');
+    console.log('[NKJxMNT] JOIN ROOM START');
+    const formattedCode = roomCode.trim().toUpperCase();
+    console.log('[NKJxMNT] querying room code:', formattedCode);
+
     if (!isSupabaseConfigured() || !supabase) {
       console.error('[NKJxMNT] Cannot join room: Supabase is not configured.');
       throw new Error(
@@ -94,19 +120,21 @@ export class MultiplayerService {
       );
     }
 
-    const formattedCode = roomCode.trim().toUpperCase();
-    console.log(`[NKJxMNT] Looking up room "${formattedCode}" in Supabase...`);
-
-    // 1. Fetch room using maybeSingle() to avoid throwing false PGRST116 errors
+    // 1. Fetch room using select('*') and maybeSingle()
     const { data: roomData, error: roomError } = await supabase
       .from('rooms')
-      .select()
+      .select('*')
       .eq('room_code', formattedCode)
       .maybeSingle();
 
     if (roomError) {
-      console.error('[NKJxMNT] Database error searching for room:', roomError);
-      throw new Error(`Database error looking up room: ${roomError.message}`);
+      console.error('[NKJxMNT] Supabase room select failure:', {
+        message: roomError.message,
+        details: roomError.details,
+        hint: roomError.hint,
+        code: roomError.code,
+      });
+      throw new Error(`Database error looking up room: ${roomError.message} (Code: ${roomError.code})`);
     }
 
     if (!roomData) {
@@ -119,11 +147,16 @@ export class MultiplayerService {
     // 2. Fetch existing players in this room
     const { data: playersData, error: playersError } = await supabase
       .from('players')
-      .select()
+      .select('*')
       .eq('room_id', roomData.id);
 
     if (playersError) {
-      console.error('[NKJxMNT] Error fetching existing players:', playersError);
+      console.error('[NKJxMNT] Error fetching existing players:', {
+        message: playersError.message,
+        details: playersError.details,
+        hint: playersError.hint,
+        code: playersError.code,
+      });
       throw new Error(`Database error fetching room players: ${playersError.message}`);
     }
 
@@ -218,15 +251,20 @@ export class MultiplayerService {
 
     const formattedCode = roomCode.trim().toUpperCase();
 
-    // Query rooms table using maybeSingle()
+    // Query rooms table using select('*') and maybeSingle()
     const { data: roomData, error: roomError } = await supabase
       .from('rooms')
-      .select()
+      .select('*')
       .eq('room_code', formattedCode)
       .maybeSingle();
 
     if (roomError) {
-      console.error(`[NKJxMNT] Database error querying room "${formattedCode}":`, roomError);
+      console.error(`[NKJxMNT] Database error querying room "${formattedCode}":`, {
+        message: roomError.message,
+        details: roomError.details,
+        hint: roomError.hint,
+        code: roomError.code,
+      });
       throw new Error(`Database error querying room: ${roomError.message}`);
     }
 
@@ -235,15 +273,20 @@ export class MultiplayerService {
       return { room: null, players: [] };
     }
 
-    // Query players table
+    // Query players table using select('*')
     const { data: playersData, error: playersError } = await supabase
       .from('players')
-      .select()
+      .select('*')
       .eq('room_id', roomData.id)
       .order('player_number', { ascending: true });
 
     if (playersError) {
-      console.error(`[NKJxMNT] Database error querying players for room ${roomData.id}:`, playersError);
+      console.error(`[NKJxMNT] Database error querying players for room ${roomData.id}:`, {
+        message: playersError.message,
+        details: playersError.details,
+        hint: playersError.hint,
+        code: playersError.code,
+      });
     }
 
     return {
