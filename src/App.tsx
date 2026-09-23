@@ -83,14 +83,22 @@ export const App: React.FC = () => {
         // Attempt auto-reconnect
         handleAutoReconnect(code, saved.playerNumber);
       } else {
-        // Fetch room info to display creator name in join modal
-        MultiplayerService.getRoomDetails(code).then(({ room, players }) => {
-          if (room) {
-            const p1 = players.find((p) => p.player_number === 1);
-            if (p1) setCreatorName(p1.name);
-            setIsJoinOpen(true);
-          }
-        });
+        // Always open join modal so user sees the prompt immediately
+        setIsJoinOpen(true);
+        MultiplayerService.getRoomDetails(code)
+          .then(({ room, players }) => {
+            if (room) {
+              const p1 = players.find((p) => p.player_number === 1);
+              if (p1) setCreatorName(p1.name);
+            } else {
+              showToast(`Room "${code}" was not found in Supabase. Please verify the code.`, 'info', 5000);
+            }
+          })
+          .catch((err: unknown) => {
+            console.error('[NKJxMNT] Error loading room details on mount:', err);
+            const msg = err instanceof Error ? err.message : 'Database error';
+            showToast(`Could not load room "${code}": ${msg}`, 'info', 5000);
+          });
       }
     }
   }, []);

@@ -1,12 +1,15 @@
 import { createClient, SupabaseClient } from '@supabase/supabase-js';
 
-// Retrieve from environment variables or custom runtime storage
-const envUrl = import.meta.env.VITE_SUPABASE_URL || '';
-const envKey = import.meta.env.VITE_SUPABASE_ANON_KEY || '';
+// Retrieve from Vite build-time environment variables or custom runtime storage
+const rawEnvUrl = import.meta.env.VITE_SUPABASE_URL || '';
+const rawEnvKey = import.meta.env.VITE_SUPABASE_ANON_KEY || '';
 
-// In-browser override support for easy deployment / testing
-const storedUrl = typeof window !== 'undefined' ? localStorage.getItem('nkj_supabase_url') || '' : '';
-const storedKey = typeof window !== 'undefined' ? localStorage.getItem('nkj_supabase_key') || '' : '';
+const envUrl = typeof rawEnvUrl === 'string' ? rawEnvUrl.trim() : '';
+const envKey = typeof rawEnvKey === 'string' ? rawEnvKey.trim() : '';
+
+// In-browser override support for easy deployment testing on mobile or staging
+const storedUrl = typeof window !== 'undefined' ? (localStorage.getItem('nkj_supabase_url') || '').trim() : '';
+const storedKey = typeof window !== 'undefined' ? (localStorage.getItem('nkj_supabase_key') || '').trim() : '';
 
 export const supabaseUrl = storedUrl || envUrl;
 export const supabaseAnonKey = storedKey || envKey;
@@ -31,9 +34,14 @@ if (isSupabaseConfigured()) {
         },
       },
     });
+    console.log('[NKJxMNT] Supabase Client Initialized for:', supabaseUrl);
   } catch (err) {
-    console.error('Error initializing Supabase client:', err);
+    console.error('[NKJxMNT] Error initializing Supabase client:', err);
   }
+} else {
+  console.warn(
+    '[NKJxMNT] Supabase credentials not found in VITE_SUPABASE_URL / VITE_SUPABASE_ANON_KEY or localStorage.'
+  );
 }
 
 export function saveCustomSupabaseConfig(url: string, key: string): boolean {

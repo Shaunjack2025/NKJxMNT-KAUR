@@ -15,264 +15,241 @@ function generateSessionToken(): string {
   return 'tok_' + Math.random().toString(36).substring(2, 15) + Date.now().toString(36);
 }
 
-// Fallback in-memory store for instant multi-tab testing if Supabase credentials are not set
-const localRooms: Map<string, { room: Room; players: Player[] }> = new Map();
-let broadcastChannel: BroadcastChannel | null = null;
-try {
-  if (typeof window !== 'undefined' && 'BroadcastChannel' in window) {
-    broadcastChannel = new BroadcastChannel('nkj_mnt_local_sync');
-  }
-} catch {
-  // Ignore BroadcastChannel errors in restricted contexts
-}
-
 export class MultiplayerService {
   /**
-   * Create a new room with Player 1
+   * Create a new room with Player 1 in Supabase
    */
   static async createRoom(creatorName: string): Promise<{ room: Room; player: Player }> {
-    const roomCode = generateRoomCode();
+    if (!isSupabaseConfigured() || !supabase) {
+      console.error('[NKJxMNT] Cannot create room: Supabase is not configured.');
+      throw new Error(
+        'Supabase is not configured. Please ensure VITE_SUPABASE_URL and VITE_SUPABASE_ANON_KEY are set in your Vercel Project Settings, then Redeploy. (Or click the top-left status badge to enter them).'
+      );
+    }
+
+    const roomCode = generateRoomCode().trim().toUpperCase();
     const sessionToken = generateSessionToken();
 
-    if (isSupabaseConfigured() && supabase) {
-      // 1. Insert room
-      const { data: roomData, error: roomError } = await supabase
-        .from('rooms')
-        .insert({
-          room_code: roomCode,
-          status: 'waiting',
-          current_turn: 1,
-        })
-        .select()
-        .single();
+    console.log(`[NKJxMNT] Creating room "${roomCode}" for creator "${creatorName}" in Supabase...`);
 
-      if (roomError || !roomData) {
-        throw new Error(`Failed to create room: ${roomError?.message || 'Unknown error'}`);
-      }
-
-      // 2. Insert Player 1
-      const { data: playerData, error: playerError } = await supabase
-        .from('players')
-        .insert({
-          room_id: roomData.id,
-          name: creatorName.trim(),
-          player_number: 1,
-          position: 0,
-          session_token: sessionToken,
-          connected: true,
-        })
-        .select()
-        .single();
-
-      if (playerError || !playerData) {
-        throw new Error(`Failed to create player: ${playerError?.message || 'Unknown error'}`);
-      }
-
-      savePlayerSession({
-        roomCode,
-        roomId: roomData.id,
-        playerNumber: 1,
-        playerName: creatorName.trim(),
-        sessionToken,
-      });
-
-      return { room: roomData as Room, player: playerData as Player };
-    } else {
-      // Local fallback mode
-      const roomId = 'room_' + Date.now();
-      const newRoom: Room = {
-        id: roomId,
+    // 1. Insert room into public.rooms
+    const { data: roomData, error: roomError } = await supabase
+      .from('rooms')
+      .insert({
         room_code: roomCode,
         status: 'waiting',
         current_turn: 1,
-        winner_id: null,
-        winner_name: null,
-        created_at: new Date().toISOString(),
-        updated_at: new Date().toISOString(),
-      };
-      const newPlayer: Player = {
-        id: 'player_1_' + Date.now(),
-        room_id: roomId,
+      })
+      .select()
+      .single();
+
+    if (roomError || !roomData) {
+      console.error('[NKJxMNT] Error creating room in Supabase:', roomError);
+      throw new Error(`Failed to create room in Supabase: ${roomError?.message || 'No data returned'}`);
+    }
+
+    console.log('[NKJxMNT] Room created successfully in Supabase with ID:', roomData.id);
+
+    // 2. Insert Player 1 into public.players
+    const { data: playerData, error: playerError } = await supabase
+      .from('players')
+      .insert({
+        room_id: roomData.id,
         name: creatorName.trim(),
         player_number: 1,
         position: 0,
         session_token: sessionToken,
         connected: true,
-      };
+      })
+      .select()
+      .single();
 
-      localRooms.set(roomCode.toUpperCase(), { room: newRoom, players: [newPlayer] });
-      savePlayerSession({
-        roomCode,
-        roomId,
-        playerNumber: 1,
-        playerName: creatorName.trim(),
-        sessionToken,
-      });
-
-      if (broadcastChannel) {
-        broadcastChannel.postMessage({ type: 'ROOM_UPDATE', roomCode, room: newRoom, players: [newPlayer] });
-      }
-
-      return { room: newRoom, player: newPlayer };
+    if (playerError || !playerData) {
+      console.error('[NKJxMNT] Error inserting Player 1 in Supabase:', playerError);
+      throw new Error(`Failed to create player in Supabase: ${playerError?.message || 'Database error'}`);
     }
+
+    console.log('[NKJxMNT] Player 1 registered in Supabase:', playerData.id);
+
+    // 3. Save session in localStorage for page refresh/reconnect
+    savePlayerSession({
+      roomCode,
+      roomId: roomData.id,
+      playerNumber: 1,
+      playerName: creatorName.trim(),
+      sessionToken,
+    });
+
+    return { room: roomData as Room, player: playerData as Player };
   }
 
   /**
-   * Join an existing room
+   * Join an existing room in Supabase
    */
   static async joinRoom(roomCode: string, playerName: string): Promise<{ room: Room; player: Player }> {
+    if (!isSupabaseConfigured() || !supabase) {
+      console.error('[NKJxMNT] Cannot join room: Supabase is not configured.');
+      throw new Error(
+        'Supabase is not configured on this device. Please verify your Vercel environment variables or enter your Supabase keys via the top-left badge.'
+      );
+    }
+
     const formattedCode = roomCode.trim().toUpperCase();
+    console.log(`[NKJxMNT] Looking up room "${formattedCode}" in Supabase...`);
 
-    if (isSupabaseConfigured() && supabase) {
-      // 1. Fetch room
-      const { data: roomData, error: roomError } = await supabase
-        .from('rooms')
-        .select()
-        .eq('room_code', formattedCode)
-        .single();
+    // 1. Fetch room using maybeSingle() to avoid throwing false PGRST116 errors
+    const { data: roomData, error: roomError } = await supabase
+      .from('rooms')
+      .select()
+      .eq('room_code', formattedCode)
+      .maybeSingle();
 
-      if (roomError || !roomData) {
-        throw new Error('Room not found. Please check your invite code.');
+    if (roomError) {
+      console.error('[NKJxMNT] Database error searching for room:', roomError);
+      throw new Error(`Database error looking up room: ${roomError.message}`);
+    }
+
+    if (!roomData) {
+      console.warn(`[NKJxMNT] Room "${formattedCode}" does not exist in Supabase rooms table.`);
+      throw new Error(`Room "${formattedCode}" not found in database. Please check your invite code.`);
+    }
+
+    console.log(`[NKJxMNT] Room "${formattedCode}" found (ID: ${roomData.id}, Status: ${roomData.status})`);
+
+    // 2. Fetch existing players in this room
+    const { data: playersData, error: playersError } = await supabase
+      .from('players')
+      .select()
+      .eq('room_id', roomData.id);
+
+    if (playersError) {
+      console.error('[NKJxMNT] Error fetching existing players:', playersError);
+      throw new Error(`Database error fetching room players: ${playersError.message}`);
+    }
+
+    const existingPlayers = (playersData || []) as Player[];
+    const saved = getSavedSession(formattedCode);
+
+    // Reconnect existing player if session token or slot matches
+    if (saved) {
+      const found = existingPlayers.find(
+        (p) => p.session_token === saved.sessionToken || p.player_number === saved.playerNumber
+      );
+      if (found) {
+        console.log(`[NKJxMNT] Reconnecting player ${found.name} (Player ${found.player_number})`);
+        return { room: roomData as Room, player: found };
       }
+    }
 
-      // 2. Fetch existing players
-      const { data: playersData } = await supabase
-        .from('players')
-        .select()
-        .eq('room_id', roomData.id);
+    // Check if slot 2 is open
+    const player2 = existingPlayers.find((p) => p.player_number === 2);
+    if (player2) {
+      throw new Error('This game room is already full (both players have joined).');
+    }
 
-      const existingPlayers = (playersData || []) as Player[];
-      const saved = getSavedSession(formattedCode);
+    const sessionToken = generateSessionToken();
 
-      // Reconnect if session matches
-      if (saved) {
-        const found = existingPlayers.find((p) => p.session_token === saved.sessionToken || p.player_number === saved.playerNumber);
-        if (found) {
-          return { room: roomData as Room, player: found };
-        }
-      }
-
-      // Check if slot 2 is open
-      const player2 = existingPlayers.find((p) => p.player_number === 2);
-
-      if (player2) {
-        throw new Error('This game room is already full (2 players).');
-      }
-
-      const sessionToken = generateSessionToken();
-
-      // Insert Player 2
-      const { data: newPlayerData, error: playerError } = await supabase
-        .from('players')
-        .insert({
-          room_id: roomData.id,
-          name: playerName.trim(),
-          player_number: 2,
-          position: 0,
-          session_token: sessionToken,
-          connected: true,
-        })
-        .select()
-        .single();
-
-      if (playerError || !newPlayerData) {
-        throw new Error(`Failed to join: ${playerError?.message || 'Database error'}`);
-      }
-
-      // Update room status to 'playing'
-      const { data: updatedRoom } = await supabase
-        .from('rooms')
-        .update({ status: 'playing', updated_at: new Date().toISOString() })
-        .eq('id', roomData.id)
-        .select()
-        .single();
-
-      savePlayerSession({
-        roomCode: formattedCode,
-        roomId: roomData.id,
-        playerNumber: 2,
-        playerName: playerName.trim(),
-        sessionToken,
-      });
-
-      return { room: (updatedRoom || roomData) as Room, player: newPlayerData as Player };
-    } else {
-      // Local fallback mode
-      const entry = localRooms.get(formattedCode);
-      if (!entry) {
-        throw new Error('Room not found. Please check your invite code.');
-      }
-
-      const saved = getSavedSession(formattedCode);
-      if (saved) {
-        const found = entry.players.find((p) => p.player_number === saved.playerNumber);
-        if (found) return { room: entry.room, player: found };
-      }
-
-      if (entry.players.length >= 2) {
-        throw new Error('This game room is already full.');
-      }
-
-      const sessionToken = generateSessionToken();
-      const newPlayer: Player = {
-        id: 'player_2_' + Date.now(),
-        room_id: entry.room.id,
+    // 3. Insert Player 2 into public.players
+    console.log(`[NKJxMNT] Registering Player 2 "${playerName}" in room ${roomData.id}...`);
+    const { data: newPlayerData, error: playerError } = await supabase
+      .from('players')
+      .insert({
+        room_id: roomData.id,
         name: playerName.trim(),
         player_number: 2,
         position: 0,
         session_token: sessionToken,
         connected: true,
-      };
+      })
+      .select()
+      .single();
 
-      entry.players.push(newPlayer);
-      entry.room.status = 'playing';
-
-      savePlayerSession({
-        roomCode: formattedCode,
-        roomId: entry.room.id,
-        playerNumber: 2,
-        playerName: playerName.trim(),
-        sessionToken,
-      });
-
-      if (broadcastChannel) {
-        broadcastChannel.postMessage({ type: 'ROOM_UPDATE', roomCode: formattedCode, room: entry.room, players: entry.players });
-      }
-
-      return { room: entry.room, player: newPlayer };
+    if (playerError || !newPlayerData) {
+      console.error('[NKJxMNT] Error inserting Player 2:', playerError);
+      throw new Error(`Failed to join room: ${playerError?.message || 'Database error'}`);
     }
+
+    // 4. Update room status to 'playing'
+    const { data: updatedRoom, error: updateError } = await supabase
+      .from('rooms')
+      .update({ status: 'playing', updated_at: new Date().toISOString() })
+      .eq('id', roomData.id)
+      .select()
+      .single();
+
+    if (updateError) {
+      console.warn('[NKJxMNT] Warning updating room status:', updateError);
+    }
+
+    savePlayerSession({
+      roomCode: formattedCode,
+      roomId: roomData.id,
+      playerNumber: 2,
+      playerName: playerName.trim(),
+      sessionToken,
+    });
+
+    // 5. Broadcast to room channel that Player 2 joined
+    const channel = supabase.channel(`game:${roomData.id}`);
+    channel.send({
+      type: 'broadcast',
+      event: 'player_joined',
+      payload: {
+        type: 'PLAYER_JOINED',
+        room_id: roomData.id,
+        player: newPlayerData,
+        timestamp: Date.now(),
+      },
+    }).catch((err) => {
+      console.warn('[NKJxMNT] Non-critical error broadcasting player_joined:', err);
+    });
+
+    return { room: (updatedRoom || roomData) as Room, player: newPlayerData as Player };
   }
 
   /**
-   * Fetch current room and player state
+   * Fetch current room and player state from Supabase
    */
   static async getRoomDetails(roomCode: string): Promise<{ room: Room | null; players: Player[] }> {
+    if (!isSupabaseConfigured() || !supabase) {
+      console.warn('[NKJxMNT] Cannot getRoomDetails: Supabase is not configured.');
+      return { room: null, players: [] };
+    }
+
     const formattedCode = roomCode.trim().toUpperCase();
 
-    if (isSupabaseConfigured() && supabase) {
-      const { data: roomData } = await supabase
-        .from('rooms')
-        .select()
-        .eq('room_code', formattedCode)
-        .single();
+    // Query rooms table using maybeSingle()
+    const { data: roomData, error: roomError } = await supabase
+      .from('rooms')
+      .select()
+      .eq('room_code', formattedCode)
+      .maybeSingle();
 
-      if (!roomData) return { room: null, players: [] };
-
-      const { data: playersData } = await supabase
-        .from('players')
-        .select()
-        .eq('room_id', roomData.id)
-        .order('player_number', { ascending: true });
-
-      return {
-        room: roomData as Room,
-        players: (playersData || []) as Player[],
-      };
-    } else {
-      const entry = localRooms.get(formattedCode);
-      if (!entry) return { room: null, players: [] };
-      return { room: entry.room, players: entry.players };
+    if (roomError) {
+      console.error(`[NKJxMNT] Database error querying room "${formattedCode}":`, roomError);
+      throw new Error(`Database error querying room: ${roomError.message}`);
     }
+
+    if (!roomData) {
+      console.warn(`[NKJxMNT] getRoomDetails: Room "${formattedCode}" not found in database.`);
+      return { room: null, players: [] };
+    }
+
+    // Query players table
+    const { data: playersData, error: playersError } = await supabase
+      .from('players')
+      .select()
+      .eq('room_id', roomData.id)
+      .order('player_number', { ascending: true });
+
+    if (playersError) {
+      console.error(`[NKJxMNT] Database error querying players for room ${roomData.id}:`, playersError);
+    }
+
+    return {
+      room: roomData as Room,
+      players: (playersData || []) as Player[],
+    };
   }
 
   /**
@@ -284,6 +261,8 @@ export class MultiplayerService {
     diceValue: number,
     steps: MoveStep[]
   ): Promise<void> {
+    if (!isSupabaseConfigured() || !supabase) return;
+
     const payload: GameEventPayload = {
       type: 'ROLL_DICE',
       room_id: roomId,
@@ -293,22 +272,16 @@ export class MultiplayerService {
       timestamp: Date.now(),
     };
 
-    if (isSupabaseConfigured() && supabase) {
-      const channel = supabase.channel(`game:${roomId}`);
-      await channel.send({
-        type: 'broadcast',
-        event: 'dice_roll',
-        payload,
-      });
-    }
-
-    if (broadcastChannel) {
-      broadcastChannel.postMessage({ type: 'GAME_EVENT', payload });
-    }
+    const channel = supabase.channel(`game:${roomId}`);
+    await channel.send({
+      type: 'broadcast',
+      event: 'dice_roll',
+      payload,
+    });
   }
 
   /**
-   * Commit authoritative move result to database
+   * Commit authoritative move result to Supabase database
    */
   static async commitMove(
     roomId: string,
@@ -317,49 +290,39 @@ export class MultiplayerService {
     nextTurn: PlayerNumber,
     winnerName: string | null = null
   ): Promise<void> {
+    if (!isSupabaseConfigured() || !supabase) {
+      console.error('[NKJxMNT] Cannot commitMove: Supabase is not configured.');
+      return;
+    }
+
     const status: RoomStatus = winnerName ? 'finished' : 'playing';
 
-    if (isSupabaseConfigured() && supabase) {
-      // Update player position
-      await supabase
-        .from('players')
-        .update({
-          position: newPosition,
-          updated_at: new Date().toISOString(),
-        })
-        .match({ room_id: roomId, player_number: playerNumber });
+    // 1. Update player position in public.players
+    const { error: playerError } = await supabase
+      .from('players')
+      .update({
+        position: newPosition,
+        updated_at: new Date().toISOString(),
+      })
+      .match({ room_id: roomId, player_number: playerNumber });
 
-      // Update room state
-      await supabase
-        .from('rooms')
-        .update({
-          current_turn: nextTurn,
-          winner_name: winnerName,
-          status,
-          updated_at: new Date().toISOString(),
-        })
-        .eq('id', roomId);
-    } else {
-      // Local fallback update
-      for (const [, val] of localRooms.entries()) {
-        if (val.room.id === roomId) {
-          const player = val.players.find((p) => p.player_number === playerNumber);
-          if (player) player.position = newPosition;
-          val.room.current_turn = nextTurn;
-          val.room.winner_name = winnerName;
-          val.room.status = status;
+    if (playerError) {
+      console.error('[NKJxMNT] Error updating player position in Supabase:', playerError);
+    }
 
-          if (broadcastChannel) {
-            broadcastChannel.postMessage({
-              type: 'ROOM_UPDATE',
-              roomCode: val.room.room_code,
-              room: val.room,
-              players: val.players,
-            });
-          }
-          break;
-        }
-      }
+    // 2. Update room state in public.rooms
+    const { error: roomError } = await supabase
+      .from('rooms')
+      .update({
+        current_turn: nextTurn,
+        winner_name: winnerName,
+        status,
+        updated_at: new Date().toISOString(),
+      })
+      .eq('id', roomId);
+
+    if (roomError) {
+      console.error('[NKJxMNT] Error updating room state in Supabase:', roomError);
     }
   }
 
@@ -367,54 +330,44 @@ export class MultiplayerService {
    * Reset game to play again
    */
   static async resetGame(roomId: string): Promise<void> {
-    if (isSupabaseConfigured() && supabase) {
-      await supabase
-        .from('players')
-        .update({ position: 0, updated_at: new Date().toISOString() })
-        .eq('room_id', roomId);
-
-      await supabase
-        .from('rooms')
-        .update({
-          status: 'playing',
-          current_turn: 1,
-          winner_name: null,
-          winner_id: null,
-          updated_at: new Date().toISOString(),
-        })
-        .eq('id', roomId);
-
-      const channel = supabase.channel(`game:${roomId}`);
-      await channel.send({
-        type: 'broadcast',
-        event: 'restart_game',
-        payload: { type: 'RESTART_GAME', room_id: roomId, timestamp: Date.now() },
-      });
-    } else {
-      for (const [, val] of localRooms.entries()) {
-        if (val.room.id === roomId) {
-          val.players.forEach((p) => (p.position = 0));
-          val.room.status = 'playing';
-          val.room.current_turn = 1;
-          val.room.winner_name = null;
-          val.room.winner_id = null;
-
-          if (broadcastChannel) {
-            broadcastChannel.postMessage({
-              type: 'ROOM_UPDATE',
-              roomCode: val.room.room_code,
-              room: val.room,
-              players: val.players,
-            });
-            broadcastChannel.postMessage({
-              type: 'GAME_EVENT',
-              payload: { type: 'RESTART_GAME', room_id: roomId, timestamp: Date.now() },
-            });
-          }
-          break;
-        }
-      }
+    if (!isSupabaseConfigured() || !supabase) {
+      console.error('[NKJxMNT] Cannot resetGame: Supabase is not configured.');
+      return;
     }
+
+    // Reset players positions
+    const { error: playersResetError } = await supabase
+      .from('players')
+      .update({ position: 0, updated_at: new Date().toISOString() })
+      .eq('room_id', roomId);
+
+    if (playersResetError) {
+      console.error('[NKJxMNT] Error resetting players in Supabase:', playersResetError);
+    }
+
+    // Reset room state
+    const { error: roomResetError } = await supabase
+      .from('rooms')
+      .update({
+        status: 'playing',
+        current_turn: 1,
+        winner_name: null,
+        winner_id: null,
+        updated_at: new Date().toISOString(),
+      })
+      .eq('id', roomId);
+
+    if (roomResetError) {
+      console.error('[NKJxMNT] Error resetting room in Supabase:', roomResetError);
+    }
+
+    // Broadcast restart event to room channel
+    const channel = supabase.channel(`game:${roomId}`);
+    await channel.send({
+      type: 'broadcast',
+      event: 'restart_game',
+      payload: { type: 'RESTART_GAME', room_id: roomId, timestamp: Date.now() },
+    });
   }
 
   /**
@@ -429,84 +382,84 @@ export class MultiplayerService {
       onStatusChange: (status: 'connected' | 'connecting' | 'disconnected') => void;
     }
   ): () => void {
-    if (isSupabaseConfigured() && supabase) {
-      handlers.onStatusChange('connecting');
+    if (!isSupabaseConfigured() || !supabase) {
+      handlers.onStatusChange('disconnected');
+      console.warn('[NKJxMNT] subscribeToRoom called without Supabase configuration.');
+      return () => {};
+    }
 
-      const channel = supabase.channel(`game:${roomId}`, {
-        config: { broadcast: { self: false } },
+    handlers.onStatusChange('connecting');
+
+    const channel = supabase.channel(`game:${roomId}`, {
+      config: { broadcast: { self: false } },
+    });
+
+    // Listen for broadcast events (dice rolls, steps, player joins, restarts)
+    channel
+      .on('broadcast', { event: 'dice_roll' }, ({ payload }) => {
+        handlers.onGameEvent(payload as GameEventPayload);
+      })
+      .on('broadcast', { event: 'restart_game' }, ({ payload }) => {
+        handlers.onGameEvent(payload as GameEventPayload);
+      })
+      .on('broadcast', { event: 'player_joined' }, async () => {
+        // When Player 2 joins, immediately refetch room and players
+        if (!supabase) return;
+        const { data: playersData } = await supabase
+          .from('players')
+          .select()
+          .eq('room_id', roomId)
+          .order('player_number', { ascending: true });
+        if (playersData) {
+          handlers.onPlayersUpdate(playersData as Player[]);
+        }
+        const { data: roomData } = await supabase
+          .from('rooms')
+          .select()
+          .eq('id', roomId)
+          .maybeSingle();
+        if (roomData) {
+          handlers.onRoomUpdate(roomData as Room);
+        }
+      })
+      // Listen for Postgres database changes
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'rooms', filter: `id=eq.${roomId}` },
+        (change) => {
+          if (change.new) {
+            handlers.onRoomUpdate(change.new as Room);
+          }
+        }
+      )
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'players', filter: `room_id=eq.${roomId}` },
+        async () => {
+          if (!supabase) return;
+          const { data } = await supabase
+            .from('players')
+            .select()
+            .eq('room_id', roomId)
+            .order('player_number', { ascending: true });
+          if (data) {
+            handlers.onPlayersUpdate(data as Player[]);
+          }
+        }
+      )
+      .subscribe((status) => {
+        console.log(`[NKJxMNT] Supabase Realtime channel status: ${status}`);
+        if (status === 'SUBSCRIBED') {
+          handlers.onStatusChange('connected');
+        } else if (status === 'CHANNEL_ERROR' || status === 'TIMED_OUT') {
+          handlers.onStatusChange('disconnected');
+        }
       });
 
-      // Listen for broadcast events (dice rolls, steps)
-      channel
-        .on('broadcast', { event: 'dice_roll' }, ({ payload }) => {
-          handlers.onGameEvent(payload as GameEventPayload);
-        })
-        .on('broadcast', { event: 'restart_game' }, ({ payload }) => {
-          handlers.onGameEvent(payload as GameEventPayload);
-        })
-        // Listen for Postgres database changes
-        .on(
-          'postgres_changes',
-          { event: '*', schema: 'public', table: 'rooms', filter: `id=eq.${roomId}` },
-          (change) => {
-            if (change.new) {
-              handlers.onRoomUpdate(change.new as Room);
-            }
-          }
-        )
-        .on(
-          'postgres_changes',
-          { event: '*', schema: 'public', table: 'players', filter: `room_id=eq.${roomId}` },
-          async () => {
-            // Refetch all players for consistent order
-            if (!supabase) return;
-            const { data } = await supabase
-              .from('players')
-              .select()
-              .eq('room_id', roomId)
-              .order('player_number', { ascending: true });
-            if (data) {
-              handlers.onPlayersUpdate(data as Player[]);
-            }
-          }
-        )
-        .subscribe((status) => {
-          if (status === 'SUBSCRIBED') {
-            handlers.onStatusChange('connected');
-          } else if (status === 'CHANNEL_ERROR' || status === 'TIMED_OUT') {
-            handlers.onStatusChange('disconnected');
-          }
-        });
-
-      return () => {
-        if (supabase) {
-          supabase.removeChannel(channel);
-        }
-      };
-    } else {
-      // Local fallback channel
-      handlers.onStatusChange('connected');
-
-      const onMessage = (e: MessageEvent) => {
-        const data = e.data;
-        if (!data) return;
-        if (data.type === 'ROOM_UPDATE' && data.room?.id === roomId) {
-          handlers.onRoomUpdate(data.room);
-          handlers.onPlayersUpdate(data.players);
-        } else if (data.type === 'GAME_EVENT' && data.payload?.room_id === roomId) {
-          handlers.onGameEvent(data.payload);
-        }
-      };
-
-      if (broadcastChannel) {
-        broadcastChannel.addEventListener('message', onMessage);
+    return () => {
+      if (supabase) {
+        supabase.removeChannel(channel);
       }
-
-      return () => {
-        if (broadcastChannel) {
-          broadcastChannel.removeEventListener('message', onMessage);
-        }
-      };
-    }
+    };
   }
 }
