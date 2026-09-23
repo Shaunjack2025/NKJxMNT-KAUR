@@ -1,4 +1,4 @@
-import { supabase, isSupabaseConfigured, getSupabase, logSupabaseDiagnostics } from '../lib/supabase';
+import { supabase, isSupabaseConfigured, getSupabase, logSupabaseDiagnostics, supabaseUrl, supabaseAnonKey, supabaseInitError } from '../lib/supabase';
 import type { Player, PlayerNumber, Room, RoomStatus, GameEventPayload, MoveStep } from '../types/game';
 import { savePlayerSession, getSavedSession } from '../lib/storage';
 
@@ -26,11 +26,19 @@ export class MultiplayerService {
 
     const client = getSupabase() || supabase;
 
-    if (!isSupabaseConfigured() || !client) {
+    if (!isSupabaseConfigured()) {
       logSupabaseDiagnostics();
-      console.error('[NKJxMNT] Cannot create room: Supabase is not configured.');
+      console.error('[NKJxMNT] Cannot create room: Supabase environment variables are missing.');
       throw new Error(
-        'Supabase is not configured on this deployed site. Please ensure VITE_SUPABASE_URL and VITE_SUPABASE_ANON_KEY are set in Vercel Project Settings, then trigger a Redeploy.'
+        `Supabase is not configured on this deployed site. VITE_SUPABASE_URL is ${supabaseUrl ? 'FOUND' : 'MISSING'}, and VITE_SUPABASE_ANON_KEY is ${supabaseAnonKey ? 'FOUND' : 'MISSING'}.`
+      );
+    }
+
+    if (!client) {
+      logSupabaseDiagnostics();
+      console.error('[NKJxMNT] Cannot create room: Supabase client failed to initialize.', supabaseInitError);
+      throw new Error(
+        `Failed to initialize Supabase client: ${supabaseInitError || 'Unknown error'}. Check browser console for details.`
       );
     }
 
@@ -118,11 +126,19 @@ export class MultiplayerService {
 
     const client = getSupabase() || supabase;
 
-    if (!isSupabaseConfigured() || !client) {
+    if (!isSupabaseConfigured()) {
       logSupabaseDiagnostics();
-      console.error('[NKJxMNT] Cannot join room: Supabase is not configured.');
+      console.error('[NKJxMNT] Cannot join room: Supabase environment variables are missing.');
       throw new Error(
-        'Supabase is not configured on this device. Please verify your Vercel environment variables or enter your Supabase keys via the top-left badge.'
+        `Supabase is not configured on this device. VITE_SUPABASE_URL is ${supabaseUrl ? 'FOUND' : 'MISSING'}, and VITE_SUPABASE_ANON_KEY is ${supabaseAnonKey ? 'FOUND' : 'MISSING'}.`
+      );
+    }
+
+    if (!client) {
+      logSupabaseDiagnostics();
+      console.error('[NKJxMNT] Cannot join room: Supabase client failed to initialize.', supabaseInitError);
+      throw new Error(
+        `Failed to initialize Supabase client: ${supabaseInitError || 'Unknown error'}. Check browser console for details.`
       );
     }
 

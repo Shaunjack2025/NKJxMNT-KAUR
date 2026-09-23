@@ -66,6 +66,7 @@ export const logSupabaseDiagnostics = (): void => {
 };
 
 export let supabase: SupabaseClient | null = null;
+export let supabaseInitError: string | null = null;
 
 export function getSupabase(): SupabaseClient | null {
   if (supabase) return supabase;
@@ -78,8 +79,10 @@ export function getSupabase(): SupabaseClient | null {
           },
         },
       });
+      supabaseInitError = null;
       return supabase;
     } catch (err) {
+      supabaseInitError = err instanceof Error ? err.message : String(err);
       console.error('[NKJxMNT] Error initializing Supabase client:', err);
       return null;
     }

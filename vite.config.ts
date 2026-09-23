@@ -3,37 +3,43 @@ import { defineConfig, loadEnv } from 'vite'
 
 // https://vite.dev/config/
 export default defineConfig(({ mode }) => {
-  const env = loadEnv(mode, process.cwd(), '');
+  const env = loadEnv(mode, process.cwd(), 'VITE_');
 
-  const supabaseUrl = 
-    process.env.VITE_SUPABASE_URL ||
-    env.VITE_SUPABASE_URL ||
-    process.env.SUPABASE_URL ||
-    env.SUPABASE_URL ||
-    process.env.NEXT_PUBLIC_SUPABASE_URL ||
-    env.NEXT_PUBLIC_SUPABASE_URL ||
-    '';
+  // Check process.env and loadEnv for VITE_SUPABASE_URL / VITE_SUPABASE_ANON_KEY
+  const allEnvKeys = Object.keys(process.env);
 
-  const supabaseAnonKey = 
-    process.env.VITE_SUPABASE_ANON_KEY ||
-    env.VITE_SUPABASE_ANON_KEY ||
-    process.env.VITE_SUPABASE_PUBLISHABLE_KEY ||
-    env.VITE_SUPABASE_PUBLISHABLE_KEY ||
-    process.env.SUPABASE_ANON_KEY ||
-    env.SUPABASE_ANON_KEY ||
-    process.env.SUPABASE_PUBLISHABLE_KEY ||
-    env.SUPABASE_PUBLISHABLE_KEY ||
-    process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY ||
-    env.NEXT_PUBLIC_SUPABASE_ANON_KEY ||
-    process.env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY ||
-    env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY ||
-    '';
+  // Normalize in case of trailing spaces or case differences in Vercel dashboard
+  if (!process.env.VITE_SUPABASE_URL && !env.VITE_SUPABASE_URL) {
+    for (const k of allEnvKeys) {
+      if (k.trim().toUpperCase() === 'VITE_SUPABASE_URL' && process.env[k]) {
+        process.env.VITE_SUPABASE_URL = process.env[k];
+        break;
+      }
+    }
+  }
+
+  if (!process.env.VITE_SUPABASE_ANON_KEY && !env.VITE_SUPABASE_ANON_KEY) {
+    for (const k of allEnvKeys) {
+      if (k.trim().toUpperCase() === 'VITE_SUPABASE_ANON_KEY' && process.env[k]) {
+        process.env.VITE_SUPABASE_ANON_KEY = process.env[k];
+        break;
+      }
+    }
+  }
+
+  const url = process.env.VITE_SUPABASE_URL || env.VITE_SUPABASE_URL;
+  const key = process.env.VITE_SUPABASE_ANON_KEY || env.VITE_SUPABASE_ANON_KEY;
+
+  // Safe build-time diagnostics - NEVER print the actual key
+  console.log('[NKJxMNT BUILD] VITE_SUPABASE_URL:', url ? 'FOUND' : 'MISSING');
+  console.log('[NKJxMNT BUILD] VITE_SUPABASE_ANON_KEY:', key ? 'FOUND' : 'MISSING');
+
+  const detectedSupabase = allEnvKeys.filter((k) => k.toUpperCase().includes('SUPABASE'));
+  if (detectedSupabase.length > 0) {
+    console.log('[NKJxMNT BUILD] Detected environment keys in build container:', detectedSupabase);
+  }
 
   return {
     plugins: [react()],
-    define: {
-      'import.meta.env.VITE_SUPABASE_URL': JSON.stringify(supabaseUrl),
-      'import.meta.env.VITE_SUPABASE_ANON_KEY': JSON.stringify(supabaseAnonKey),
-    },
   };
 });
