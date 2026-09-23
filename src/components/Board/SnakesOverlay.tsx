@@ -4,7 +4,7 @@ import { SNAKES, getTileCoordinates } from '../../game/boardConfig';
 export const SnakesOverlay: React.FC = () => {
   return (
     <svg
-      className="absolute inset-0 w-full h-full pointer-events-none z-20 overflow-visible"
+      className="absolute inset-0 w-full h-full pointer-events-none z-15 overflow-visible"
       viewBox="0 0 1000 1000"
       preserveAspectRatio="none"
     >

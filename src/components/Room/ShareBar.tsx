@@ -10,7 +10,7 @@ export const ShareBar: React.FC<ShareBarProps> = ({ roomCode }) => {
 
   const getShareUrl = () => {
     if (typeof window !== 'undefined') {
-      return `${window.location.origin}?room=${roomCode}`;
+      return `${window.location.origin}/game/${roomCode}`;
     }
     return '';
   };

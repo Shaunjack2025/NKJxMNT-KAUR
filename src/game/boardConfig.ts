@@ -46,6 +46,24 @@ export function getTileCoordinates(tileNumber: number): { x: number; y: number }
   };
 }
 
+/**
+ * Returns customized anchor coordinates for ladders so they never obstruct numbers (especially #5)
+ */
+export function getLadderAnchor(ladder: SnakeOrLadder, isStart: boolean): { x: number; y: number } {
+  const tileNumber = isStart ? ladder.from : ladder.to;
+  const baseCoord = getTileCoordinates(tileNumber);
+
+  // For Tile 5 (Master Ladder): anchor base to the upper edge of tile 5 so the number 5 is completely clear
+  if (ladder.isMaster && isStart) {
+    return {
+      x: baseCoord.x + 1.2, // slightly shifted right
+      y: baseCoord.y - 3.8, // moved up to top edge of tile 5
+    };
+  }
+
+  return baseCoord;
+}
+
 export function checkSpecialTile(position: number): SnakeOrLadder | null {
   const ladder = LADDERS.find((l) => l.from === position);
   if (ladder) return ladder;

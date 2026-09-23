@@ -48,6 +48,7 @@ export const App: React.FC = () => {
   // Active game state
   const [diceValue, setDiceValue] = useState<number>(1);
   const [isRolling, setIsRolling] = useState<boolean>(false);
+  const [isFiveCelebration, setIsFiveCelebration] = useState<boolean>(false);
   const [toast, setToast] = useState<ToastMessage | null>(null);
   const [isWinModalOpen, setIsWinModalOpen] = useState<boolean>(false);
 
@@ -158,6 +159,12 @@ export const App: React.FC = () => {
       await new Promise((resolve) => setTimeout(resolve, 1100));
       setIsRolling(false);
 
+      // Special 5 Easter Egg Celebration on Remote Roll
+      if (event.dice_value === 5) {
+        soundManager.playSpecialFiveChime();
+        showToast("✨ 💗 FIVE! Her Special Number! 💗 ✨", "ladder", 2200);
+      }
+
       // Play step-by-step remote moves
       await executeMoveSteps(event.player_number, event.steps);
     } else if (event.type === 'RESTART_GAME') {
@@ -178,7 +185,17 @@ export const App: React.FC = () => {
 
       if (step.type === 'step') {
         soundManager.playStep(i);
-        await new Promise((resolve) => setTimeout(resolve, 220));
+
+        // Check if landed on special Tile 5!
+        if (step.position === 5) {
+          setIsFiveCelebration(true);
+          soundManager.playSpecialFiveChime();
+          showToast("✨ Landed on 5! Special Birthday Tile! 💗 ✨", "ladder", 2400);
+          await new Promise((resolve) => setTimeout(resolve, 1500));
+          setIsFiveCelebration(false);
+        } else {
+          await new Promise((resolve) => setTimeout(resolve, 220));
+        }
       } else if (step.type === 'ladder') {
         const isMaster = step.position === 58;
         soundManager.playLadder(isMaster);
@@ -264,6 +281,12 @@ export const App: React.FC = () => {
     // 4. Wait for 3D dice animation to settle
     await new Promise((resolve) => setTimeout(resolve, 1100));
     setIsRolling(false);
+
+    // Special 5 Easter Egg Celebration on Local Roll
+    if (roll === 5) {
+      soundManager.playSpecialFiveChime();
+      showToast("✨ 💗 FIVE! Her Special Number! 💗 ✨", "ladder", 2200);
+    }
 
     // If overshoot, cannot move
     if (!result.canMove) {
@@ -353,7 +376,11 @@ export const App: React.FC = () => {
             />
 
             {/* The 10x10 Snake & Ladder Board */}
-            <Board players={players} activePlayerNumber={room.current_turn} />
+            <Board
+              players={players}
+              activePlayerNumber={room.current_turn}
+              isFiveCelebration={isFiveCelebration}
+            />
 
             {/* Interactive 3D Dice */}
             <div className="py-1">
@@ -362,6 +389,7 @@ export const App: React.FC = () => {
                 isRolling={isRolling}
                 disabled={!isMyTurn || waitingForSecondPlayer}
                 onClick={handleRollDice}
+                showFiveCelebration={diceValue === 5 && !isRolling}
               />
             </div>
 

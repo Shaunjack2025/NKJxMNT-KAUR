@@ -66,6 +66,34 @@ class SoundManager {
     }
   }
 
+  // Special Birthday 5 Twinkle Chime!
+  public playSpecialFiveChime() {
+    if (this.isMuted) return;
+    this.initCtx();
+    if (!this.ctx) return;
+
+    const notes = [739.99, 830.61, 987.77, 1108.73, 1244.51];
+    notes.forEach((freq, idx) => {
+      setTimeout(() => {
+        if (!this.ctx) return;
+        const osc = this.ctx.createOscillator();
+        const gain = this.ctx.createGain();
+
+        osc.type = 'sine';
+        osc.frequency.setValueAtTime(freq, this.ctx.currentTime);
+
+        gain.gain.setValueAtTime(0.15, this.ctx.currentTime);
+        gain.gain.exponentialRampToValueAtTime(0.001, this.ctx.currentTime + 0.28);
+
+        osc.connect(gain);
+        gain.connect(this.ctx.destination);
+
+        osc.start();
+        osc.stop(this.ctx.currentTime + 0.28);
+      }, idx * 60);
+    });
+  }
+
   // Token hopping step sound (cute soft blip)
   public playStep(stepIndex: number = 0) {
     if (this.isMuted) return;

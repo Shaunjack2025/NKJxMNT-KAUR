@@ -16,7 +16,7 @@ export const PlayerTokens: React.FC<PlayerTokensProps> = ({ players, activePlaye
   const isSameTile = Boolean(p1 && p2 && p1.position > 0 && p1.position === p2.position);
 
   return (
-    <div className="absolute inset-0 pointer-events-none z-30">
+    <div className="absolute inset-0 pointer-events-none z-20">
       {/* Player 1 Token (Pink Themed 💖) */}
       {p1 && (
         <TokenItem

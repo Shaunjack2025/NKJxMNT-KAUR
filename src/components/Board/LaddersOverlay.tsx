@@ -1,10 +1,10 @@
 import React from 'react';
-import { LADDERS, getTileCoordinates } from '../../game/boardConfig';
+import { LADDERS, getLadderAnchor } from '../../game/boardConfig';
 
 export const LaddersOverlay: React.FC = () => {
   return (
     <svg
-      className="absolute inset-0 w-full h-full pointer-events-none z-15 overflow-visible"
+      className="absolute inset-0 w-full h-full pointer-events-none z-10 overflow-visible"
       viewBox="0 0 1000 1000"
       preserveAspectRatio="none"
     >
@@ -24,8 +24,8 @@ export const LaddersOverlay: React.FC = () => {
       </defs>
 
       {LADDERS.map((ladder) => {
-        const startCoord = getTileCoordinates(ladder.from);
-        const endCoord = getTileCoordinates(ladder.to);
+        const startCoord = getLadderAnchor(ladder, true);
+        const endCoord = getLadderAnchor(ladder, false);
 
         const sx = startCoord.x * 10;
         const sy = startCoord.y * 10;
@@ -43,7 +43,7 @@ export const LaddersOverlay: React.FC = () => {
         const py = ux;
 
         const isMaster = Boolean(ladder.isMaster);
-        const width = isMaster ? 22 : 16;
+        const width = isMaster ? 20 : 16;
         const halfW = width / 2;
 
         // Stiles coordinates
