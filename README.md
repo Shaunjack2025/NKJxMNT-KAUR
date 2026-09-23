@@ -6,9 +6,36 @@ A real-time online multiplayer **2-player Snake & Ladder web game** designed for
 
 ---
 
+## 🏗️ Production Architecture
+
+```text
+             INTERNET / PLAYERS
+                     │
+                     ▼
+                  VERCEL
+          (Global Edge Network / HTTPS)
+                     │
+                     ▼
+             React / Vite Web App
+                     │
+                     ▼
+                  SUPABASE
+               ↙          ↘
+         PostgreSQL      Realtime
+        (Persistent)   (WebSocket Channels)
+                           │
+                           ▼
+               Realtime Multiplayer Game
+```
+
+- **Frontend Hosting**: **Vercel** provides fast edge CDN hosting, automated HTTPS, and instant GitHub CI/CD deployments.
+- **Backend / Realtime Engine**: **Supabase** provides persistent PostgreSQL tables (`rooms`, `players`, `game_events`) and WebSocket Realtime subscriptions for sub-millisecond turn and dice sync.
+- **Zero Localhost Dependency**: Neither player needs to be on localhost or keep a computer running—the game is 100% cloud-hosted.
+
+---
+
 ## ✨ Features & Visual Highlights
 
-- **Real-Time Online Multiplayer**: Built on **Supabase PostgreSQL & Realtime Broadcast engine**, allowing instant turns, synchronized 3D dice rolls, and smooth token movement across different devices without refreshing.
 - **The Secret Meaning of Number 5 (Her Birthday Easter Egg 🎂💗)**:
   - Number 5 is her birthday! It is the recurring centerpiece theme throughout the board and dice.
   - **Guaranteed Visibility (Layer z-30)**: Rendered on a dedicated top layer above all snakes, ladders, and tokens with glowing gold/pink gradient typography, lucky crown badge, and sparkles.
@@ -17,8 +44,8 @@ A real-time online multiplayer **2-player Snake & Ladder web game** designed for
   - Visual hierarchy:
     ```text
     1. Board Background & Tile Surfaces (z-0)
-    2. White Ladders Overlay (z-10)
-    3. Pink Snakes Overlay (z-15)
+    2. Pure White Ladders Overlay (z-10)
+    3. All Pink Snakes Overlay (z-15)
     4. Player Tokens (z-20)
     5. NUMBER LABELS LAYER (z-30) ← Always on top!
     6. Particle Celebration Bursts (z-40)
@@ -26,9 +53,9 @@ A real-time online multiplayer **2-player Snake & Ladder web game** designed for
   - Every number is bold, high-contrast, and text-shadowed, completely readable on mobile without disappearing behind ladders or snakes.
 - **Special Dice 5 Easter Egg**:
   - Rolling 1, 2, 3, 4, 6 plays the standard roll animation.
-  - Rolling a **5** triggers a special animation: a pink sparkle burst, celebratory pulse, and `"✨ 💗 FIVE 💗 ✨"` floating badge, accompanied by a special procedural twinkle chime!
+  - Rolling a **5** triggers a special animation: a pink sparkle burst, celebratory pulse, and `"✨ 💗 SPECIAL FIVE 💗 ✨"` floating badge, accompanied by a special procedural twinkle chime!
 - **Landing on Tile 5 Celebration**:
-  - Landing on Tile 5 triggers an exclusive 1.5-second celebration: expanding pink ripple halo, floating hearts, sparkles, and `"✨ Landed on 5! Special Birthday Tile! ✨"` before ascending the Master Ladder.
+  - Landing on Tile 5 triggers an exclusive 1.5-second celebration: expanding pink ripple halo, floating mini hearts and sparkles, and `"✨ Landed on 5! Special Birthday Tile! ✨"` before ascending the Master Ladder.
   - *Note: Game rules and dice probabilities remain classic and balanced—this is purely a visual/audio Easter egg!*
 - **All Pink Snakes 💖**:
   - Curved SVG bodies with vibrant pink gradients, drop shadows, expressive eyes, and natural slithering curves connecting heads and tails accurately.
@@ -43,35 +70,20 @@ A real-time online multiplayer **2-player Snake & Ladder web game** designed for
 
 ---
 
-## 🛠️ Architecture
+## 🚀 Quick Local Development & Multi-Tab Testing
 
-```text
-INTERNET / PLAYERS
-       │
-       ▼
-AWS CloudFront (HTTPS CDN / Edge Caching / SPA Routing Rewrite: 403/404 -> /index.html 200)
-       │
-       ▼
-AWS S3 Bucket (Static React Frontend `dist/`)
-       │
-       ▼
-Supabase Backend
- ├── PostgreSQL Database (`rooms`, `players`, `game_events`)
- └── Realtime WebSocket Engine (instant cross-device synchronization)
-```
-
----
-
-## 🚀 Local Development & Multi-Tab Testing
-
-### 1. Install & Run Locally
+### 1. Install Dependencies
 ```bash
 npm install
+```
+
+### 2. Start Dev Server
+```bash
 npm run dev
 ```
 
-### 2. Multi-Tab Testing (Zero Config)
-The app includes an automatic cross-tab broadcast fallback for local testing:
+### 3. Immediate Multi-Tab Testing (Zero Config)
+The app includes a built-in cross-tab broadcast fallback for local testing:
 - Window 1: Click **CREATE GAME**, enter `NKJ`, and copy the invite link.
 - Window 2: Paste the link, enter `MNT`, and click **JOIN GAME 🎲**.
 - Both windows synchronize turns, 3D dice rolls, and token movements in real-time.
@@ -95,97 +107,46 @@ To enable multiplayer between two physical phones or remote computers:
 
 ---
 
-## ☁️ AWS S3 + CloudFront Production Deployment
+## ▲ Deploying to Vercel (Recommended & Effortless)
 
-Follow these exact steps to host the game on AWS with HTTPS and worldwide CDN delivery:
+Deploying to Vercel takes less than 2 minutes and automatically provides global HTTPS and continuous deployment on every git push.
 
-### Step 1: Create an S3 Bucket
-1. Open the [Amazon S3 Console](https://s3.console.aws.amazon.com/s3/).
-2. Click **Create bucket**.
-3. **Bucket name**: Enter a unique name, e.g., `nkjxmnt-kaur-web` (note down your chosen name).
-4. **AWS Region**: Select your preferred region (e.g., `us-east-1` or `ap-south-1`).
-5. **Object Ownership**: Keep **ACLs disabled (recommended)**.
-6. **Block Public Access settings for this bucket**:
-   - If using CloudFront with **Origin Access Control (OAC)** (recommended), keep **Block all public access** checked!
-7. Click **Create bucket**.
-
----
-
-### Step 2: Build the Application
-Ensure your `.env` contains your production Supabase keys, then run:
+### Step 1: Push Repository to GitHub
+Ensure all your project files are committed to a GitHub repository:
 ```bash
-npm run build
+git add .
+git commit -m "Deploy NKJxMNT KAUR to Vercel"
+git push origin master
 ```
-This compiles the production assets into the `dist/` directory.
 
----
+### Step 2: Import into Vercel
+1. Go to [vercel.com](https://vercel.com) and log in.
+2. Click **Add New...** → **Project**.
+3. Select your GitHub repository: `NKJxMNT KAUR`.
 
-### Step 3: Create a CloudFront Distribution
-1. Open the [Amazon CloudFront Console](https://console.aws.amazon.com/cloudfront/v4/home).
-2. Click **Create distribution**.
-3. **Origin domain**: Click the field and select your S3 bucket (e.g. `nkjxmnt-kaur-web.s3.amazonaws.com`).
-4. **Origin access**: Select **Origin access control settings (recommended)**:
-   - Click **Create control setting** → Click **Create**.
-5. **Default cache behavior**:
-   - **Viewer protocol policy**: Select **Redirect HTTP to HTTPS**.
-   - **Allowed HTTP methods**: `GET, HEAD`.
-6. **Web Application Firewall (WAF)**: Select **Do not enable security protections** (to keep costs at $0 for personal use).
-7. **Default root object**: Enter `index.html`.
-8. Click **Create distribution**.
-9. **Copy S3 Bucket Policy**:
-   - CloudFront will display a banner: *"The S3 bucket policy needs to be updated"*.
-   - Click **Copy policy**.
-   - Open your S3 bucket → **Permissions** tab → **Bucket policy** → **Edit** → Paste the policy and click **Save changes**.
+### Step 3: Configure Build & Environment Variables
+1. **Framework Preset**: Vercel automatically detects **Vite**.
+2. **Build Command**: `npm run build`
+3. **Output Directory**: `dist`
+4. Expand **Environment Variables** and add:
+   - `VITE_SUPABASE_URL`: Your Supabase Project URL (e.g. `https://xyz.supabase.co`)
+   - `VITE_SUPABASE_ANON_KEY`: Your Supabase Anon Public Key
+5. Click **Deploy**!
 
----
+### Step 4: Access Your Live Game!
+Vercel will build and assign a production URL (e.g., `https://nkjxmnt-kaur.vercel.app`):
+1. Open the URL on your device.
+2. Click **CREATE GAME**, enter `NKJ`, and tap **COPY LINK**.
+3. Send the link to your partner:
+   `https://nkjxmnt-kaur.vercel.app/game/XXXXXX`
+4. When your partner opens the link, the game room loads immediately with their invite ready!
 
-### Step 4: Configure CloudFront SPA Routing (CRITICAL)
-Because React is a Single Page Application, direct links like `/game/AB12CD` or page refreshes must return `index.html` instead of a 403/404 error:
-
-1. In your CloudFront distribution, navigate to the **Error pages** tab.
-2. Click **Create custom error response**.
-3. Fill in:
-   - **HTTP error code**: `403: Forbidden`
-   - **Customize error response**: `Yes`
-   - **Response page path**: `/index.html`
-   - **HTTP response code**: `200: OK`
-4. Click **Create custom error response**.
-5. Repeat for error code `404: Not Found`:
-   - **HTTP error code**: `404: Not Found`
-   - **Response page path**: `/index.html`
-   - **HTTP response code**: `200: OK`
-   - Click **Create**.
-
----
-
-### Step 5: Upload Files to S3
-
-#### Option A: Using the Automated Script (Recommended)
-Once your AWS CLI is authenticated (`aws login` or `aws configure`):
-```powershell
-# Windows PowerShell
-.\scripts\deploy-aws.ps1 -BucketName "your-bucket-name" -DistributionId "your-cf-distribution-id"
-```
+### Step 5: Updating the Game in the Future
+Whenever you push changes to GitHub:
 ```bash
-# macOS / Linux / Git Bash
-./scripts/deploy-aws.sh "your-bucket-name" "your-cf-distribution-id"
+git push origin master
 ```
-
-#### Option B: Manual Upload via AWS Console
-1. Open your S3 bucket in the [AWS S3 Console](https://s3.console.aws.amazon.com/s3/).
-2. Click **Upload**.
-3. Open the `dist/` folder on your computer.
-4. Drag and drop all files and folders inside `dist/` (`index.html`, `favicon.svg`, `assets/`, etc.) into the S3 upload area.
-5. Click **Upload**.
-
----
-
-### Step 6: Access Your Live Game!
-1. In CloudFront, copy your **Distribution domain name** (e.g. `d111111abcdef8.cloudfront.net`).
-2. Open `https://d111111abcdef8.cloudfront.net` on your phone or laptop.
-3. Click **CREATE GAME**, enter `NKJ`, and tap **COPY LINK**.
-4. Send the link to your partner (`https://d111111abcdef8.cloudfront.net/game/XXXXXX`).
-5. Your partner opens the link on their device, enters `MNT`, and you can play online together!
+Vercel automatically triggers a fresh build and updates the live site with zero downtime.
 
 ---
 
@@ -195,6 +156,7 @@ Once your AWS CLI is authenticated (`aws login` or `aws configure`):
 - **Git Protection**: `.env` and `.env.*` are excluded via `.gitignore`.
 - **Public Key Only**: Only the Supabase `anon` public key is ever used. The `service_role` secret key is **never** included in frontend client code.
 - **Row Level Security**: The database restricts modifications and allows safe anonymous rooms.
+- **SPA Rewrites**: Handled securely via `vercel.json` to ensure clean routing without server leakage.
 
 ---
 
