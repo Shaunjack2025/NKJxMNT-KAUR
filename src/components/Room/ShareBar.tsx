@@ -9,10 +9,7 @@ export const ShareBar: React.FC<ShareBarProps> = ({ roomCode }) => {
   const [copied, setCopied] = useState(false);
 
   const getShareUrl = () => {
-    if (typeof window !== 'undefined') {
-      return `${window.location.origin}/game/${roomCode}`;
-    }
-    return '';
+    return `https://nk-jx-mnt-kaur.vercel.app/game/${roomCode}`;
   };
 
   const handleCopy = async () => {
