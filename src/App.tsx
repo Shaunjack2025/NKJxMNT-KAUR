@@ -9,14 +9,14 @@ import { ConnectionBadge } from './components/Game/ConnectionBadge';
 import { ShareBar } from './components/Room/ShareBar';
 import { CreateRoomModal } from './components/Room/CreateRoomModal';
 import { JoinRoomModal } from './components/Room/JoinRoomModal';
-import { SupabaseConfigModal } from './components/UI/SupabaseConfigModal';
+import { FirebaseConfigModal } from './components/UI/FirebaseConfigModal';
 import { LandingView } from './components/UI/LandingView';
 import { Toast } from './components/UI/Toast';
 
 import { MultiplayerService } from './services/multiplayerService';
 import { calculateMove } from './game/gameLogic';
 import { soundManager } from './game/soundManager';
-import { isSupabaseConfigured } from './lib/supabase';
+import { isFirebaseConfigured } from './lib/firebase';
 import { getSavedSession, clearSavedSession } from './lib/storage';
 import type {
   Player,
@@ -36,7 +36,7 @@ export const App: React.FC = () => {
 
   // Connection & UI modals
   const [connectionStatus, setConnectionStatus] = useState<ConnectionStatus>(
-    isSupabaseConfigured() ? 'connecting' : 'demo'
+    isFirebaseConfigured() ? 'connecting' : 'disconnected'
   );
   const [isCreateOpen, setIsCreateOpen] = useState(false);
   const [isJoinOpen, setIsJoinOpen] = useState(false);
@@ -91,7 +91,7 @@ export const App: React.FC = () => {
               const p1 = players.find((p) => p.player_number === 1);
               if (p1) setCreatorName(p1.name);
             } else {
-              showToast(`Room "${code}" was not found in Supabase. Please verify the code.`, 'info', 5000);
+              showToast(`Room "${code}" was not found in Firebase. Please verify the code.`, 'info', 5000);
             }
           })
           .catch((err: unknown) => {
@@ -101,8 +101,8 @@ export const App: React.FC = () => {
           });
       }
     } else {
-      // Landing page: verify Supabase backend connection so badge updates from "Connecting..."
-      if (isSupabaseConfigured()) {
+      // Landing page: verify Firebase backend connection so badge updates from "Connecting..."
+      if (isFirebaseConfigured()) {
         MultiplayerService.checkConnection()
           .then(({ ok, latencyMs, error }) => {
             if (ok) {
@@ -118,7 +118,7 @@ export const App: React.FC = () => {
             console.error('[NKJxMNT] Landing page connection check error:', err);
           });
       } else {
-        setConnectionStatus('demo');
+        setConnectionStatus('disconnected');
       }
     }
   }, []);
@@ -160,7 +160,7 @@ export const App: React.FC = () => {
         handleRemoteGameEvent(event);
       },
       onStatusChange: (status) => {
-        setConnectionStatus(isSupabaseConfigured() ? status : 'demo');
+        setConnectionStatus(isFirebaseConfigured() ? status : 'disconnected');
       },
     });
 
@@ -487,7 +487,7 @@ export const App: React.FC = () => {
         onReturnToHome={handleReturnHome}
       />
 
-      <SupabaseConfigModal
+      <FirebaseConfigModal
         isOpen={isConfigOpen}
         onClose={() => setIsConfigOpen(false)}
       />

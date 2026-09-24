@@ -1,26 +1,27 @@
 import React, { useState } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { X, Database, Check, ShieldCheck, KeyRound, Activity, AlertCircle, RefreshCw } from 'lucide-react';
+import { X, Check, ShieldCheck, KeyRound, Activity, AlertCircle, RefreshCw, Flame } from 'lucide-react';
 import {
-  isSupabaseConfigured,
-  supabaseUrl,
-  supabaseAnonKey,
-  getKeyFormat,
-  getSupabaseProjectRef,
-  testSupabaseConnection,
-  saveCustomSupabaseConfig,
-  clearCustomSupabaseConfig,
-} from '../../lib/supabase';
+  isFirebaseConfigured,
+  firebaseApiKey,
+  firebaseDatabaseUrl,
+  firebaseProjectId,
+  testFirebaseConnection,
+  saveCustomFirebaseConfig,
+  clearCustomFirebaseConfig,
+  getSafeKeyPreview,
+} from '../../lib/firebase';
 
-interface SupabaseConfigModalProps {
+interface FirebaseConfigModalProps {
   isOpen: boolean;
   onClose: () => void;
 }
 
-export const SupabaseConfigModal: React.FC<SupabaseConfigModalProps> = ({ isOpen, onClose }) => {
-  const isConfigured = isSupabaseConfigured();
-  const [url, setUrl] = useState(supabaseUrl);
-  const [anonKey, setAnonKey] = useState('');
+export const FirebaseConfigModal: React.FC<FirebaseConfigModalProps> = ({ isOpen, onClose }) => {
+  const isConfigured = isFirebaseConfigured();
+  const [apiKey, setApiKey] = useState('');
+  const [dbUrl, setDbUrl] = useState(firebaseDatabaseUrl);
+  const [projectId, setProjectId] = useState(firebaseProjectId);
   const [saved, setSaved] = useState(false);
   const [testing, setTesting] = useState(false);
   const [testResult, setTestResult] = useState<{
@@ -28,23 +29,20 @@ export const SupabaseConfigModal: React.FC<SupabaseConfigModalProps> = ({ isOpen
     ok: boolean;
     latencyMs?: number;
     error?: string;
-    endpoint?: string;
   }>({ tested: false, ok: false });
 
-  const projectRef = getSupabaseProjectRef(supabaseUrl);
-  const keyFormat = getKeyFormat(supabaseAnonKey);
+  const keyPreview = getSafeKeyPreview(firebaseApiKey);
 
   const handleTestConnection = async () => {
     setTesting(true);
     setTestResult({ tested: false, ok: false });
     try {
-      const result = await testSupabaseConnection();
+      const result = await testFirebaseConnection();
       setTestResult({
         tested: true,
         ok: result.ok,
         latencyMs: result.latencyMs,
         error: result.error,
-        endpoint: result.restEndpoint,
       });
     } catch (err: unknown) {
       setTestResult({
@@ -59,8 +57,8 @@ export const SupabaseConfigModal: React.FC<SupabaseConfigModalProps> = ({ isOpen
 
   const handleSave = (e: React.FormEvent) => {
     e.preventDefault();
-    if (!url || !anonKey) return;
-    saveCustomSupabaseConfig(url, anonKey);
+    if (!apiKey) return;
+    saveCustomFirebaseConfig(apiKey, dbUrl, projectId);
     setSaved(true);
     setTimeout(() => {
       onClose();
@@ -68,7 +66,7 @@ export const SupabaseConfigModal: React.FC<SupabaseConfigModalProps> = ({ isOpen
   };
 
   const handleReset = () => {
-    clearCustomSupabaseConfig();
+    clearCustomFirebaseConfig();
   };
 
   return (
@@ -89,12 +87,12 @@ export const SupabaseConfigModal: React.FC<SupabaseConfigModalProps> = ({ isOpen
             </button>
 
             <div className="flex items-center gap-3 mb-4">
-              <div className="w-10 h-10 rounded-xl bg-emerald-500/20 text-emerald-400 border border-emerald-500/30 flex items-center justify-center">
-                <Database className="w-5 h-5" />
+              <div className="w-10 h-10 rounded-xl bg-amber-500/20 text-amber-400 border border-amber-500/30 flex items-center justify-center">
+                <Flame className="w-5 h-5 fill-amber-400 text-amber-400" />
               </div>
               <div>
                 <h3 className="text-base font-bold text-white">Backend & Connection Diagnostics</h3>
-                <p className="text-xs text-gray-400">Supabase PostgreSQL & Realtime Engine</p>
+                <p className="text-xs text-gray-400">Firebase Realtime Database</p>
               </div>
             </div>
 
@@ -110,17 +108,17 @@ export const SupabaseConfigModal: React.FC<SupabaseConfigModalProps> = ({ isOpen
                 <>
                   <ShieldCheck className="w-5 h-5 text-emerald-400 shrink-0" />
                   <div className="text-xs">
-                    <strong className="block text-white">Supabase Configured</strong>
-                    Project: <span className="font-mono text-emerald-300">{projectRef || 'Custom'}</span> • Key:{' '}
-                    <span className="font-mono text-emerald-300">{keyFormat}</span>
+                    <strong className="block text-white">Firebase RTDB Configured</strong>
+                    Project: <span className="font-mono text-emerald-300">{firebaseProjectId}</span> • Key:{' '}
+                    <span className="font-mono text-emerald-300">{keyPreview}</span>
                   </div>
                 </>
               ) : (
                 <>
                   <KeyRound className="w-5 h-5 text-amber-400 shrink-0" />
                   <div className="text-xs">
-                    <strong className="block text-white">Local Multi-Tab Demo Mode</strong>
-                    Add your Supabase URL & Anon Key below for cross-device multiplayer.
+                    <strong className="block text-white">Firebase Configuration Required</strong>
+                    Add your Firebase API Key to `.env.local` or enter below for cross-device multiplayer.
                   </div>
                 </>
               )}
@@ -132,7 +130,7 @@ export const SupabaseConfigModal: React.FC<SupabaseConfigModalProps> = ({ isOpen
                 <div className="flex items-center justify-between">
                   <span className="text-[11px] font-bold text-gray-400 uppercase tracking-wider flex items-center gap-1.5">
                     <Activity className="w-3.5 h-3.5 text-pink-400" />
-                    REST Endpoint Health
+                    Realtime DB Health
                   </span>
                   <button
                     type="button"
@@ -146,8 +144,8 @@ export const SupabaseConfigModal: React.FC<SupabaseConfigModalProps> = ({ isOpen
                 </div>
 
                 <div className="text-[11px] font-mono text-gray-400 truncate">
-                  <span className="text-gray-500">Target: </span>
-                  {supabaseUrl ? `${supabaseUrl}/rest/v1/rooms` : '(none)'}
+                  <span className="text-gray-500">Database URL: </span>
+                  {firebaseDatabaseUrl || '(none)'}
                 </div>
 
                 {testResult.tested && (
@@ -166,12 +164,12 @@ export const SupabaseConfigModal: React.FC<SupabaseConfigModalProps> = ({ isOpen
                     <div className="text-[11px] leading-relaxed break-words">
                       {testResult.ok ? (
                         <span>
-                          <strong>Connected successfully!</strong> REST endpoint responded in{' '}
+                          <strong>Connected successfully!</strong> Firebase RTDB handshake active in{' '}
                           <span className="font-mono text-emerald-300">{testResult.latencyMs}ms</span>.
                         </span>
                       ) : (
                         <span>
-                          <strong>Connection failed:</strong> {testResult.error || 'Network request failed'}.
+                          <strong>Connection issue:</strong> {testResult.error || 'Connection failed'}.
                         </span>
                       )}
                     </div>
@@ -183,42 +181,57 @@ export const SupabaseConfigModal: React.FC<SupabaseConfigModalProps> = ({ isOpen
             {/* Quick Setup Instructions */}
             <div className="space-y-2 mb-4 text-xs text-gray-300">
               <h4 className="font-bold text-white uppercase text-[11px] tracking-wider">
-                How to connect your Supabase project:
+                Environment Variables (Vercel & .env.local):
               </h4>
               <ol className="list-decimal list-inside space-y-1 text-gray-400">
                 <li>
-                  Create a free project at <span className="text-pink-300 font-mono">supabase.com</span>
+                  <span className="text-pink-300 font-mono">VITE_FIREBASE_API_KEY</span> (from Firebase Console)
                 </li>
                 <li>
-                  Run the provided <span className="text-pink-300 font-mono">supabase/schema.sql</span> in SQL Editor
+                  <span className="text-pink-300 font-mono">VITE_FIREBASE_PROJECT_ID</span> = <span className="font-mono text-white">nkjxmnt-kaur-6aef9</span>
                 </li>
-                <li>Paste your Project URL & Anon public key below (or set in Vercel environment variables)</li>
+                <li>
+                  <span className="text-pink-300 font-mono">VITE_FIREBASE_DATABASE_URL</span> = <span className="font-mono text-white">https://nkjxmnt-kaur-6aef9-default-rtdb.firebaseio.com</span>
+                </li>
               </ol>
             </div>
 
             <form onSubmit={handleSave} className="space-y-3.5">
               <div>
                 <label className="block text-xs font-bold text-gray-400 uppercase tracking-wider mb-1">
-                  Supabase Project URL
+                  Firebase Web API Key
                 </label>
                 <input
-                  type="text"
-                  value={url}
-                  onChange={(e) => setUrl(e.target.value)}
-                  placeholder="https://xyzcompany.supabase.co"
+                  type="password"
+                  value={apiKey}
+                  onChange={(e) => setApiKey(e.target.value)}
+                  placeholder="AIzaSy..."
                   className="w-full px-3 py-2 rounded-lg bg-[#0b0a14] border border-white/10 text-xs text-white font-mono outline-none focus:border-pink-500"
                 />
               </div>
 
               <div>
                 <label className="block text-xs font-bold text-gray-400 uppercase tracking-wider mb-1">
-                  Supabase Anon Public Key
+                  Realtime Database URL
                 </label>
                 <input
-                  type="password"
-                  value={anonKey}
-                  onChange={(e) => setAnonKey(e.target.value)}
-                  placeholder="sb_publishable_... or eyJhbGci..."
+                  type="text"
+                  value={dbUrl}
+                  onChange={(e) => setDbUrl(e.target.value)}
+                  placeholder="https://nkjxmnt-kaur-6aef9-default-rtdb.firebaseio.com"
+                  className="w-full px-3 py-2 rounded-lg bg-[#0b0a14] border border-white/10 text-xs text-white font-mono outline-none focus:border-pink-500"
+                />
+              </div>
+
+              <div>
+                <label className="block text-xs font-bold text-gray-400 uppercase tracking-wider mb-1">
+                  Firebase Project ID
+                </label>
+                <input
+                  type="text"
+                  value={projectId}
+                  onChange={(e) => setProjectId(e.target.value)}
+                  placeholder="nkjxmnt-kaur-6aef9"
                   className="w-full px-3 py-2 rounded-lg bg-[#0b0a14] border border-white/10 text-xs text-white font-mono outline-none focus:border-pink-500"
                 />
               </div>

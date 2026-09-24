@@ -1,17 +1,58 @@
 import {
-  supabase,
-  isSupabaseConfigured,
-  getSupabase,
-  logSupabaseDiagnostics,
-  supabaseUrl,
-  supabaseAnonKey,
-  supabaseInitError,
-  getKeyFormat,
-  getSupabaseProjectRef,
-  testSupabaseConnection,
-} from '../lib/supabase';
-import type { Player, PlayerNumber, Room, RoomStatus, GameEventPayload, MoveStep } from '../types/game';
+  getFirebaseDatabase,
+  isFirebaseConfigured,
+  testFirebaseConnection,
+  logFirebaseDiagnostics,
+  firebaseDatabaseUrl,
+  firebaseProjectId,
+  ref,
+  get,
+  set,
+  update,
+  onValue,
+  off,
+  onDisconnect,
+} from '../lib/firebase';
+import type {
+  Player,
+  PlayerNumber,
+  Room,
+  RoomStatus,
+  GameEventPayload,
+  MoveStep,
+} from '../types/game';
 import { savePlayerSession, getSavedSession } from '../lib/storage';
+
+export interface FirebasePlayerState {
+  name: string;
+  position: number;
+  connected: boolean;
+  sessionToken?: string;
+  updatedAt?: number;
+}
+
+export interface FirebaseLastEvent {
+  id: string;
+  type: 'ROLL_DICE' | 'RESTART_GAME' | 'PLAYER_JOINED';
+  playerNumber?: PlayerNumber;
+  diceValue?: number;
+  steps?: MoveStep[];
+  timestamp: number;
+}
+
+export interface FirebaseRoomState {
+  roomCode?: string;
+  status: RoomStatus;
+  currentTurn: PlayerNumber;
+  winner: string | null;
+  players?: {
+    player1?: FirebasePlayerState;
+    player2?: FirebasePlayerState;
+  };
+  lastEvent?: FirebaseLastEvent;
+  createdAt: number;
+  updatedAt: number;
+}
 
 function generateRoomCode(): string {
   const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
@@ -26,428 +67,335 @@ function generateSessionToken(): string {
   return 'tok_' + Math.random().toString(36).substring(2, 15) + Date.now().toString(36);
 }
 
+// Convert RTDB room format to application Room type
+function formatRoom(roomCode: string, data: FirebaseRoomState): Room {
+  const createdAtIso = typeof data.createdAt === 'number'
+    ? new Date(data.createdAt).toISOString()
+    : new Date().toISOString();
+  const updatedAtIso = typeof data.updatedAt === 'number'
+    ? new Date(data.updatedAt).toISOString()
+    : new Date().toISOString();
+
+  return {
+    id: roomCode,
+    room_code: roomCode,
+    status: data.status || 'waiting',
+    current_turn: (data.currentTurn as PlayerNumber) || 1,
+    winner_id: null,
+    winner_name: data.winner || null,
+    created_at: createdAtIso,
+    updated_at: updatedAtIso,
+  };
+}
+
+// Convert RTDB players format to application Player[] list
+function formatPlayers(roomCode: string, data: FirebaseRoomState): Player[] {
+  const players: Player[] = [];
+
+  if (data.players?.player1) {
+    players.push({
+      id: `${roomCode}_1`,
+      room_id: roomCode,
+      name: data.players.player1.name || 'Player 1',
+      player_number: 1,
+      position: typeof data.players.player1.position === 'number' ? data.players.player1.position : 0,
+      session_token: data.players.player1.sessionToken || '',
+      connected: Boolean(data.players.player1.connected),
+      updated_at: data.players.player1.updatedAt
+        ? new Date(data.players.player1.updatedAt).toISOString()
+        : undefined,
+    });
+  }
+
+  if (data.players?.player2) {
+    players.push({
+      id: `${roomCode}_2`,
+      room_id: roomCode,
+      name: data.players.player2.name || 'Player 2',
+      player_number: 2,
+      position: typeof data.players.player2.position === 'number' ? data.players.player2.position : 0,
+      session_token: data.players.player2.sessionToken || '',
+      connected: Boolean(data.players.player2.connected),
+      updated_at: data.players.player2.updatedAt
+        ? new Date(data.players.player2.updatedAt).toISOString()
+        : undefined,
+    });
+  }
+
+  return players;
+}
+
+// Keep track of locally initiated event IDs so we don't trigger self-animations
+const localProcessedEventIds = new Set<string>();
+
 export class MultiplayerService {
   /**
-   * Health check for connection status
+   * Health check for Firebase Realtime Database connection status
    */
   static async checkConnection(): Promise<{
     ok: boolean;
     latencyMs: number;
     error?: string;
-    restEndpoint: string;
   }> {
-    return testSupabaseConnection();
+    const result = await testFirebaseConnection();
+    return {
+      ok: result.ok,
+      latencyMs: result.latencyMs,
+      error: result.error,
+    };
   }
 
   /**
-   * Create a new room with Player 1 in Supabase
+   * Setup player presence (online / offline) with onDisconnect hook
+   */
+  private static setupPresence(
+    roomCode: string,
+    playerNumber: PlayerNumber
+  ): () => void {
+    const db = getFirebaseDatabase();
+    if (!db) return () => {};
+
+    const playerConnectedRef = ref(db, `rooms/${roomCode}/players/player${playerNumber}/connected`);
+    const connectedRef = ref(db, '.info/connected');
+
+    const handleConnectedChange = (snap: { val: () => any }) => {
+      if (snap.val() === true) {
+        set(playerConnectedRef, true);
+        onDisconnect(playerConnectedRef).set(false);
+      }
+    };
+
+    onValue(connectedRef, handleConnectedChange);
+
+    return () => {
+      off(connectedRef, 'value', handleConnectedChange);
+    };
+  }
+
+  /**
+   * Create a new room with Player 1 in Firebase Realtime Database
    */
   static async createRoom(creatorName: string): Promise<{ room: Room; player: Player }> {
-    const projectRef = getSupabaseProjectRef(supabaseUrl);
-    const roomsEndpoint = `${supabaseUrl}/rest/v1/rooms`;
-    const keyFormat = getKeyFormat(supabaseAnonKey);
-
     console.log('[NKJxMNT] ========================================');
-    console.log('[NKJxMNT] CREATE ROOM START');
+    console.log('[NKJxMNT] FIREBASE CREATE ROOM START');
     console.log('[NKJxMNT] Creator Name:', creatorName);
-    console.log('[NKJxMNT] Target Supabase Base URL:', supabaseUrl || '(none)');
-    console.log('[NKJxMNT] Target Supabase Project Ref:', projectRef || '(none)');
-    console.log('[NKJxMNT] Target REST Endpoint:', roomsEndpoint);
-    console.log('[NKJxMNT] Key Format:', keyFormat);
-    console.log('[NKJxMNT] Browser Online:', typeof navigator !== 'undefined' ? navigator.onLine : 'unknown');
+    console.log('[NKJxMNT] Target Database URL:', firebaseDatabaseUrl);
+    console.log('[NKJxMNT] Target Project ID:', firebaseProjectId);
 
-    const client = getSupabase() || supabase;
-
-    if (!isSupabaseConfigured()) {
-      logSupabaseDiagnostics();
-      console.error('[NKJxMNT] Cannot create room: Supabase environment variables are missing.');
+    if (!isFirebaseConfigured()) {
+      logFirebaseDiagnostics();
+      console.error('[NKJxMNT] Cannot create room: Firebase environment variables are missing.');
       throw new Error(
-        `Supabase is not configured on this deployed site. VITE_SUPABASE_URL is ${supabaseUrl ? 'FOUND' : 'MISSING'}, and VITE_SUPABASE_ANON_KEY is ${supabaseAnonKey ? 'FOUND' : 'MISSING'}.`
+        `Firebase Realtime Database is not configured. Please ensure VITE_FIREBASE_API_KEY and VITE_FIREBASE_DATABASE_URL are configured.`
       );
     }
 
-    if (!client) {
-      logSupabaseDiagnostics();
-      console.error('[NKJxMNT] Cannot create room: Supabase client failed to initialize.', supabaseInitError);
-      throw new Error(
-        `Failed to initialize Supabase client: ${supabaseInitError || 'Unknown error'}. Check browser console for details.`
-      );
+    const db = getFirebaseDatabase();
+    if (!db) {
+      logFirebaseDiagnostics();
+      throw new Error('Failed to initialize Firebase Realtime Database. Check browser console for details.');
     }
 
-    const roomCode = generateRoomCode().trim().toUpperCase();
+    // Generate unique 6-character room code
+    let roomCode = generateRoomCode();
+    let attempts = 0;
+    while (attempts < 5) {
+      const existingSnap = await get(ref(db, `rooms/${roomCode}`));
+      if (!existingSnap.exists()) break;
+      roomCode = generateRoomCode();
+      attempts++;
+    }
+
     const sessionToken = generateSessionToken();
+    const now = Date.now();
 
-    console.log('[NKJxMNT] Generated room code:', roomCode);
-
-    // 1. Insert room into public.rooms with detailed error diagnostics
-    let roomData: Room | null = null;
-    let roomError: any = null;
-    let nativeRoomError: Error | null = null;
-
-    try {
-      console.log(`[NKJxMNT] Executing client.from('rooms').insert() -> ${roomsEndpoint}`);
-      const res = await client
-        .from('rooms')
-        .insert({
-          room_code: roomCode,
-          status: 'waiting',
-          current_turn: 1,
-        })
-        .select()
-        .single();
-      roomData = res.data;
-      roomError = res.error;
-    } catch (err: unknown) {
-      nativeRoomError = err instanceof Error ? err : new Error(String(err));
-      console.error('[NKJxMNT] Native exception during room INSERT:', {
-        name: nativeRoomError.name,
-        message: nativeRoomError.message,
-        isTypeError: nativeRoomError instanceof TypeError,
-        stack: nativeRoomError.stack,
-      });
-    }
-
-    if (nativeRoomError || roomError || !roomData) {
-      const activeError = nativeRoomError || roomError;
-      const isTypeError = activeError instanceof TypeError || activeError?.message?.includes('Failed to fetch');
-
-      console.error('[NKJxMNT] Supabase room insert failure diagnostics:', {
-        isTypeError,
-        message: activeError?.message,
-        details: activeError?.details,
-        hint: activeError?.hint,
-        code: activeError?.code,
-        name: activeError?.name,
-        stack: activeError?.stack,
-        endpoint: roomsEndpoint,
-        supabaseUrl,
-        projectRef,
-        keyFormat,
-        browserOnline: typeof navigator !== 'undefined' ? navigator.onLine : 'unknown',
-      });
-
-      let userFacingMessage = '';
-      if (isTypeError) {
-        userFacingMessage = `Failed to create room in Supabase: Network fetch failure (endpoint: ${roomsEndpoint}). Could not connect to Supabase. Check your Supabase project status, network connection, or URL configuration.`;
-      } else if (roomError?.code === '42P01') {
-        userFacingMessage = `Failed to create room in Supabase: Table "rooms" does not exist in your Supabase project. Please execute the "supabase/schema.sql" script in your Supabase SQL Editor.`;
-      } else if (roomError?.message) {
-        userFacingMessage = `Failed to create room in Supabase: ${roomError.message}${roomError.code ? ` (Code: ${roomError.code})` : ''}${roomError.hint ? ` - Hint: ${roomError.hint}` : ''}`;
-      } else {
-        userFacingMessage = `Failed to create room in Supabase: No room data returned from database.`;
-      }
-
-      throw new Error(userFacingMessage);
-    }
-
-    console.log('[NKJxMNT] Supabase room insert success. Room ID:', roomData.id);
-
-    // 2. Insert Player 1 into public.players
-    const playersEndpoint = `${supabaseUrl}/rest/v1/players`;
-    let playerData: Player | null = null;
-    let playerError: any = null;
-    let nativePlayerError: Error | null = null;
-
-    try {
-      console.log(`[NKJxMNT] Executing client.from('players').insert() -> ${playersEndpoint}`);
-      const res = await client
-        .from('players')
-        .insert({
-          room_id: roomData.id,
+    const initialRoomData: FirebaseRoomState = {
+      roomCode,
+      status: 'waiting',
+      currentTurn: 1,
+      winner: null,
+      players: {
+        player1: {
           name: creatorName.trim(),
-          player_number: 1,
           position: 0,
-          session_token: sessionToken,
           connected: true,
-        })
-        .select()
-        .single();
-      playerData = res.data;
-      playerError = res.error;
+          sessionToken,
+          updatedAt: now,
+        },
+      },
+      createdAt: now,
+      updatedAt: now,
+    };
+
+    try {
+      console.log(`[NKJxMNT] Writing room ${roomCode} to Firebase RTDB path: rooms/${roomCode}`);
+      await set(ref(db, `rooms/${roomCode}`), initialRoomData);
     } catch (err: unknown) {
-      nativePlayerError = err instanceof Error ? err : new Error(String(err));
-      console.error('[NKJxMNT] Native exception during player INSERT:', {
-        name: nativePlayerError.name,
-        message: nativePlayerError.message,
-        isTypeError: nativePlayerError instanceof TypeError,
-        stack: nativePlayerError.stack,
-      });
+      console.error('[NKJxMNT] Failed to write room to Firebase RTDB:', err);
+      const msg = err instanceof Error ? err.message : String(err);
+      throw new Error(`Failed to create room in Firebase Realtime Database: ${msg}`);
     }
 
-    if (nativePlayerError || playerError || !playerData) {
-      const activeError = nativePlayerError || playerError;
-      const isTypeError = activeError instanceof TypeError || activeError?.message?.includes('Failed to fetch');
+    // Attach presence listener for Player 1
+    MultiplayerService.setupPresence(roomCode, 1);
 
-      console.error('[NKJxMNT] Supabase player insert failure diagnostics:', {
-        isTypeError,
-        message: activeError?.message,
-        details: activeError?.details,
-        hint: activeError?.hint,
-        code: activeError?.code,
-        name: activeError?.name,
-        stack: activeError?.stack,
-        endpoint: playersEndpoint,
-        supabaseUrl,
-        projectRef,
-      });
-
-      let userFacingMessage = '';
-      if (isTypeError) {
-        userFacingMessage = `Failed to register player in Supabase: Network fetch failure (endpoint: ${playersEndpoint}).`;
-      } else if (playerError?.code === '42P01') {
-        userFacingMessage = `Failed to register player in Supabase: Table "players" does not exist. Please run supabase/schema.sql in your Supabase SQL Editor.`;
-      } else if (playerError?.message) {
-        userFacingMessage = `Failed to register player in Supabase: ${playerError.message}${playerError.code ? ` (Code: ${playerError.code})` : ''}${playerError.hint ? ` - Hint: ${playerError.hint}` : ''}`;
-      } else {
-        userFacingMessage = `Failed to register player in Supabase: No player data returned.`;
-      }
-
-      throw new Error(userFacingMessage);
-    }
-
-    console.log('[NKJxMNT] Player insert success (Player 1 ID:', playerData.id, ')');
-    console.log('[NKJxMNT] CREATE ROOM SUCCESS');
-    console.log('[NKJxMNT] ========================================');
-
-    // 3. Save session in localStorage for page refresh/reconnect
+    // Save session in localStorage for reconnects
     savePlayerSession({
       roomCode,
-      roomId: roomData.id,
+      roomId: roomCode,
       playerNumber: 1,
       playerName: creatorName.trim(),
       sessionToken,
     });
 
-    return { room: roomData as Room, player: playerData as Player };
+    const room = formatRoom(roomCode, initialRoomData);
+    const players = formatPlayers(roomCode, initialRoomData);
+    const player = players.find((p) => p.player_number === 1)!;
+
+    console.log('[NKJxMNT] Firebase room created successfully:', roomCode);
+    console.log('[NKJxMNT] ========================================');
+
+    return { room, player };
   }
 
   /**
-   * Join an existing room in Supabase
+   * Join an existing room in Firebase Realtime Database
    */
   static async joinRoom(roomCode: string, playerName: string): Promise<{ room: Room; player: Player }> {
     const formattedCode = roomCode.trim().toUpperCase();
-    const roomsEndpoint = `${supabaseUrl}/rest/v1/rooms?room_code=eq.${formattedCode}`;
 
     console.log('[NKJxMNT] ========================================');
-    console.log('[NKJxMNT] JOIN ROOM START');
-    console.log('[NKJxMNT] Querying room code:', formattedCode);
-    console.log('[NKJxMNT] Endpoint:', roomsEndpoint);
+    console.log('[NKJxMNT] FIREBASE JOIN ROOM START');
+    console.log('[NKJxMNT] Joining Room Code:', formattedCode);
+    console.log('[NKJxMNT] Player Name:', playerName);
 
-    const client = getSupabase() || supabase;
-
-    if (!isSupabaseConfigured()) {
-      logSupabaseDiagnostics();
-      console.error('[NKJxMNT] Cannot join room: Supabase environment variables are missing.');
+    if (!isFirebaseConfigured()) {
+      logFirebaseDiagnostics();
       throw new Error(
-        `Supabase is not configured on this device. VITE_SUPABASE_URL is ${supabaseUrl ? 'FOUND' : 'MISSING'}, and VITE_SUPABASE_ANON_KEY is ${supabaseAnonKey ? 'FOUND' : 'MISSING'}.`
+        `Firebase Realtime Database is not configured. Please ensure VITE_FIREBASE_API_KEY and VITE_FIREBASE_DATABASE_URL are configured.`
       );
     }
 
-    if (!client) {
-      logSupabaseDiagnostics();
-      console.error('[NKJxMNT] Cannot join room: Supabase client failed to initialize.', supabaseInitError);
-      throw new Error(
-        `Failed to initialize Supabase client: ${supabaseInitError || 'Unknown error'}. Check browser console for details.`
-      );
+    const db = getFirebaseDatabase();
+    if (!db) {
+      throw new Error('Failed to initialize Firebase Realtime Database.');
     }
 
-    // 1. Fetch room using select('*') and maybeSingle()
-    let roomData: Room | null = null;
-    let roomError: any = null;
-    let nativeRoomError: Error | null = null;
+    const roomRef = ref(db, `rooms/${formattedCode}`);
+    const snapshot = await get(roomRef);
 
-    try {
-      const res = await client
-        .from('rooms')
-        .select('*')
-        .eq('room_code', formattedCode)
-        .maybeSingle();
-      roomData = res.data;
-      roomError = res.error;
-    } catch (err: unknown) {
-      nativeRoomError = err instanceof Error ? err : new Error(String(err));
+    if (!snapshot.exists()) {
+      console.warn(`[NKJxMNT] Room "${formattedCode}" does not exist in Firebase RTDB.`);
+      throw new Error(`Room "${formattedCode}" not found. Please verify the 6-character code.`);
     }
 
-    if (nativeRoomError || roomError) {
-      const activeError = nativeRoomError || roomError;
-      const isTypeError = activeError instanceof TypeError || activeError?.message?.includes('Failed to fetch');
-
-      console.error('[NKJxMNT] Supabase room select failure:', {
-        isTypeError,
-        message: activeError?.message,
-        details: activeError?.details,
-        hint: activeError?.hint,
-        code: activeError?.code,
-        name: activeError?.name,
-      });
-
-      if (isTypeError) {
-        throw new Error(`Network failure querying room: Could not connect to Supabase (${supabaseUrl}/rest/v1/rooms).`);
-      }
-      throw new Error(`Database error looking up room: ${activeError?.message}${activeError?.code ? ` (Code: ${activeError.code})` : ''}`);
-    }
-
-    if (!roomData) {
-      console.warn(`[NKJxMNT] Room "${formattedCode}" does not exist in Supabase rooms table.`);
-      throw new Error(`Room "${formattedCode}" not found in database. Please check your invite code.`);
-    }
-
-    console.log(`[NKJxMNT] Room "${formattedCode}" found (ID: ${roomData.id}, Status: ${roomData.status})`);
-
-    // 2. Fetch existing players in this room
-    const { data: playersData, error: playersError } = await client
-      .from('players')
-      .select('*')
-      .eq('room_id', roomData.id);
-
-    if (playersError) {
-      console.error('[NKJxMNT] Error fetching existing players:', {
-        message: playersError.message,
-        details: playersError.details,
-        hint: playersError.hint,
-        code: playersError.code,
-      });
-      throw new Error(`Database error fetching room players: ${playersError.message}`);
-    }
-
-    const existingPlayers = (playersData || []) as Player[];
+    const roomData = snapshot.val() as FirebaseRoomState;
+    const existingPlayers = formatPlayers(formattedCode, roomData);
     const saved = getSavedSession(formattedCode);
 
-    // Reconnect existing player if session token or slot matches
+    // 1. Reconnect if session matches existing player
     if (saved) {
       const found = existingPlayers.find(
         (p) => p.session_token === saved.sessionToken || p.player_number === saved.playerNumber
       );
       if (found) {
         console.log(`[NKJxMNT] Reconnecting player ${found.name} (Player ${found.player_number})`);
-        return { room: roomData as Room, player: found };
+        MultiplayerService.setupPresence(formattedCode, found.player_number);
+        return { room: formatRoom(formattedCode, roomData), player: found };
       }
     }
 
-    // Check if slot 2 is open
-    const player2 = existingPlayers.find((p) => p.player_number === 2);
-    if (player2) {
+    // 2. Check if player 2 slot is available
+    if (roomData.players?.player2) {
       throw new Error('This game room is already full (both players have joined).');
     }
 
     const sessionToken = generateSessionToken();
+    const now = Date.now();
+    const joinEventId = `join_${now}_${Math.random().toString(36).substring(2, 6)}`;
+    localProcessedEventIds.add(joinEventId);
 
-    // 3. Insert Player 2 into public.players
-    console.log(`[NKJxMNT] Registering Player 2 "${playerName}" in room ${roomData.id}...`);
-    const { data: newPlayerData, error: playerError } = await client
-      .from('players')
-      .insert({
-        room_id: roomData.id,
+    const updates: Record<string, any> = {
+      'players/player2': {
         name: playerName.trim(),
-        player_number: 2,
         position: 0,
-        session_token: sessionToken,
         connected: true,
-      })
-      .select()
-      .single();
+        sessionToken,
+        updatedAt: now,
+      },
+      status: 'playing',
+      updatedAt: now,
+      lastEvent: {
+        id: joinEventId,
+        type: 'PLAYER_JOINED',
+        timestamp: now,
+      },
+    };
 
-    if (playerError || !newPlayerData) {
-      console.error('[NKJxMNT] Error inserting Player 2:', playerError);
-      throw new Error(`Failed to join room: ${playerError?.message || 'Database error'}`);
+    try {
+      await update(roomRef, updates);
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      console.error('[NKJxMNT] Error updating room with Player 2:', err);
+      throw new Error(`Failed to join room in Firebase: ${msg}`);
     }
 
-    // 4. Update room status to 'playing'
-    const { data: updatedRoom, error: updateError } = await client
-      .from('rooms')
-      .update({ status: 'playing', updated_at: new Date().toISOString() })
-      .eq('id', roomData.id)
-      .select()
-      .single();
-
-    if (updateError) {
-      console.warn('[NKJxMNT] Warning updating room status:', updateError);
-    }
+    // Attach presence for Player 2
+    MultiplayerService.setupPresence(formattedCode, 2);
 
     savePlayerSession({
       roomCode: formattedCode,
-      roomId: roomData.id,
+      roomId: formattedCode,
       playerNumber: 2,
       playerName: playerName.trim(),
       sessionToken,
     });
 
-    // 5. Broadcast to room channel that Player 2 joined
-    const channel = client.channel(`game:${roomData.id}`);
-    channel.send({
-      type: 'broadcast',
-      event: 'player_joined',
-      payload: {
-        type: 'PLAYER_JOINED',
-        room_id: roomData.id,
-        player: newPlayerData,
-        timestamp: Date.now(),
-      },
-    }).catch((err) => {
-      console.warn('[NKJxMNT] Non-critical error broadcasting player_joined:', err);
-    });
+    // Re-fetch updated snapshot
+    const updatedSnap = await get(roomRef);
+    const updatedData = (updatedSnap.val() || roomData) as FirebaseRoomState;
+    const players = formatPlayers(formattedCode, updatedData);
+    const player = players.find((p) => p.player_number === 2)!;
 
-    return { room: (updatedRoom || roomData) as Room, player: newPlayerData as Player };
+    console.log('[NKJxMNT] Joined room successfully as Player 2:', playerName);
+    console.log('[NKJxMNT] ========================================');
+
+    return { room: formatRoom(formattedCode, updatedData), player };
   }
 
   /**
-   * Fetch current room and player state from Supabase
+   * Fetch current room and player state from Firebase Realtime Database
    */
   static async getRoomDetails(roomCode: string): Promise<{ room: Room | null; players: Player[] }> {
-    const client = getSupabase() || supabase;
-    if (!isSupabaseConfigured() || !client) {
-      console.warn('[NKJxMNT] Cannot getRoomDetails: Supabase is not configured.');
+    if (!isFirebaseConfigured()) {
+      return { room: null, players: [] };
+    }
+
+    const db = getFirebaseDatabase();
+    if (!db) {
       return { room: null, players: [] };
     }
 
     const formattedCode = roomCode.trim().toUpperCase();
+    try {
+      const snap = await get(ref(db, `rooms/${formattedCode}`));
+      if (!snap.exists()) {
+        return { room: null, players: [] };
+      }
 
-    // Query rooms table using select('*') and maybeSingle()
-    const { data: roomData, error: roomError } = await client
-      .from('rooms')
-      .select('*')
-      .eq('room_code', formattedCode)
-      .maybeSingle();
-
-    if (roomError) {
-      console.error(`[NKJxMNT] Database error querying room "${formattedCode}":`, {
-        message: roomError.message,
-        details: roomError.details,
-        hint: roomError.hint,
-        code: roomError.code,
-      });
-      throw new Error(`Database error querying room: ${roomError.message}`);
-    }
-
-    if (!roomData) {
-      console.warn(`[NKJxMNT] getRoomDetails: Room "${formattedCode}" not found in database.`);
+      const data = snap.val() as FirebaseRoomState;
+      return {
+        room: formatRoom(formattedCode, data),
+        players: formatPlayers(formattedCode, data),
+      };
+    } catch (err) {
+      console.error(`[NKJxMNT] Error querying room "${formattedCode}" from Firebase:`, err);
       return { room: null, players: [] };
     }
-
-    // Query players table using select('*')
-    const { data: playersData, error: playersError } = await client
-      .from('players')
-      .select('*')
-      .eq('room_id', roomData.id)
-      .order('player_number', { ascending: true });
-
-    if (playersError) {
-      console.error(`[NKJxMNT] Database error querying players for room ${roomData.id}:`, {
-        message: playersError.message,
-        details: playersError.details,
-        hint: playersError.hint,
-        code: playersError.code,
-      });
-    }
-
-    return {
-      room: roomData as Room,
-      players: (playersData || []) as Player[],
-    };
   }
 
   /**
-   * Broadcast roll event to room channel
+   * Broadcast dice roll event immediately to room path in Firebase RTDB
    */
   static async broadcastDiceRoll(
     roomId: string,
@@ -455,28 +403,33 @@ export class MultiplayerService {
     diceValue: number,
     steps: MoveStep[]
   ): Promise<void> {
-    const client = getSupabase() || supabase;
-    if (!isSupabaseConfigured() || !client) return;
+    const db = getFirebaseDatabase();
+    if (!db) return;
 
-    const payload: GameEventPayload = {
+    const eventId = `roll_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
+    localProcessedEventIds.add(eventId);
+
+    const payload: FirebaseLastEvent = {
+      id: eventId,
       type: 'ROLL_DICE',
-      room_id: roomId,
-      player_number: playerNumber,
-      dice_value: diceValue,
+      playerNumber,
+      diceValue,
       steps,
       timestamp: Date.now(),
     };
 
-    const channel = client.channel(`game:${roomId}`);
-    await channel.send({
-      type: 'broadcast',
-      event: 'dice_roll',
-      payload,
-    });
+    try {
+      await update(ref(db, `rooms/${roomId}`), {
+        lastEvent: payload,
+        updatedAt: Date.now(),
+      });
+    } catch (err) {
+      console.error('[NKJxMNT] Error broadcasting dice roll to Firebase:', err);
+    }
   }
 
   /**
-   * Commit authoritative move result to Supabase database
+   * Commit authoritative move result to Firebase Realtime Database
    */
   static async commitMove(
     roomId: string,
@@ -485,90 +438,69 @@ export class MultiplayerService {
     nextTurn: PlayerNumber,
     winnerName: string | null = null
   ): Promise<void> {
-    const client = getSupabase() || supabase;
-    if (!isSupabaseConfigured() || !client) {
-      console.error('[NKJxMNT] Cannot commitMove: Supabase is not configured.');
-      return;
-    }
+    const db = getFirebaseDatabase();
+    if (!db) return;
 
     const status: RoomStatus = winnerName ? 'finished' : 'playing';
+    const now = Date.now();
 
-    // 1. Update player position in public.players
-    const { error: playerError } = await client
-      .from('players')
-      .update({
-        position: newPosition,
-        updated_at: new Date().toISOString(),
-      })
-      .match({ room_id: roomId, player_number: playerNumber });
+    const updates: Record<string, any> = {
+      [`players/player${playerNumber}/position`]: newPosition,
+      [`players/player${playerNumber}/updatedAt`]: now,
+      currentTurn: nextTurn,
+      winner: winnerName || null,
+      status,
+      updatedAt: now,
+    };
 
-    if (playerError) {
-      console.error('[NKJxMNT] Error updating player position in Supabase:', playerError);
-    }
-
-    // 2. Update room state in public.rooms
-    const { error: roomError } = await client
-      .from('rooms')
-      .update({
-        current_turn: nextTurn,
-        winner_name: winnerName,
-        status,
-        updated_at: new Date().toISOString(),
-      })
-      .eq('id', roomId);
-
-    if (roomError) {
-      console.error('[NKJxMNT] Error updating room state in Supabase:', roomError);
+    try {
+      await update(ref(db, `rooms/${roomId}`), updates);
+    } catch (err) {
+      console.error('[NKJxMNT] Error committing move to Firebase:', err);
     }
   }
 
   /**
-   * Reset game to play again
+   * Reset game to play again in Firebase Realtime Database
    */
   static async resetGame(roomId: string): Promise<void> {
-    const client = getSupabase() || supabase;
-    if (!isSupabaseConfigured() || !client) {
-      console.error('[NKJxMNT] Cannot resetGame: Supabase is not configured.');
-      return;
+    const db = getFirebaseDatabase();
+    if (!db) return;
+
+    const now = Date.now();
+    const eventId = `restart_${now}_${Math.random().toString(36).substring(2, 6)}`;
+    localProcessedEventIds.add(eventId);
+
+    const updates: Record<string, any> = {
+      'players/player1/position': 0,
+      'players/player1/updatedAt': now,
+      status: 'playing',
+      currentTurn: 1,
+      winner: null,
+      lastEvent: {
+        id: eventId,
+        type: 'RESTART_GAME',
+        timestamp: now,
+      },
+      updatedAt: now,
+    };
+
+    // If player 2 exists, also reset player 2's position
+    const snap = await get(ref(db, `rooms/${roomId}/players/player2`));
+    if (snap.exists()) {
+      updates['players/player2/position'] = 0;
+      updates['players/player2/updatedAt'] = now;
     }
 
-    // Reset players positions
-    const { error: playersResetError } = await client
-      .from('players')
-      .update({ position: 0, updated_at: new Date().toISOString() })
-      .eq('room_id', roomId);
-
-    if (playersResetError) {
-      console.error('[NKJxMNT] Error resetting players in Supabase:', playersResetError);
+    try {
+      await update(ref(db, `rooms/${roomId}`), updates);
+    } catch (err) {
+      console.error('[NKJxMNT] Error resetting game in Firebase:', err);
     }
-
-    // Reset room state
-    const { error: roomResetError } = await client
-      .from('rooms')
-      .update({
-        status: 'playing',
-        current_turn: 1,
-        winner_name: null,
-        winner_id: null,
-        updated_at: new Date().toISOString(),
-      })
-      .eq('id', roomId);
-
-    if (roomResetError) {
-      console.error('[NKJxMNT] Error resetting room in Supabase:', roomResetError);
-    }
-
-    // Broadcast restart event to room channel
-    const channel = client.channel(`game:${roomId}`);
-    await channel.send({
-      type: 'broadcast',
-      event: 'restart_game',
-      payload: { type: 'RESTART_GAME', room_id: roomId, timestamp: Date.now() },
-    });
   }
 
   /**
-   * Subscribe to real-time updates for a room
+   * Subscribe to real-time updates for a room using Firebase Realtime Database listeners
    */
   static subscribeToRoom(
     roomId: string,
@@ -579,96 +511,82 @@ export class MultiplayerService {
       onStatusChange: (status: 'connected' | 'connecting' | 'disconnected') => void;
     }
   ): () => void {
-    const client = getSupabase() || supabase;
-    if (!isSupabaseConfigured() || !client) {
+    if (!isFirebaseConfigured()) {
       handlers.onStatusChange('disconnected');
-      console.warn('[NKJxMNT] subscribeToRoom called without Supabase configuration.');
+      console.warn('[NKJxMNT] subscribeToRoom called without Firebase configuration.');
+      return () => {};
+    }
+
+    const db = getFirebaseDatabase();
+    if (!db) {
+      handlers.onStatusChange('disconnected');
       return () => {};
     }
 
     handlers.onStatusChange('connecting');
 
-    const channel = client.channel(`game:${roomId}`, {
-      config: { broadcast: { self: false } },
-    });
+    const roomRef = ref(db, `rooms/${roomId}`);
+    const connectedRef = ref(db, '.info/connected');
+    const processedEventsInSession = new Set<string>();
 
-    // Listen for broadcast events (dice rolls, steps, player joins, restarts)
-    channel
-      .on('broadcast', { event: 'dice_roll' }, ({ payload }) => {
-        handlers.onGameEvent(payload as GameEventPayload);
-      })
-      .on('broadcast', { event: 'restart_game' }, ({ payload }) => {
-        handlers.onGameEvent(payload as GameEventPayload);
-      })
-      .on('broadcast', { event: 'player_joined' }, async () => {
-        // When Player 2 joins, immediately refetch room and players
-        const activeClient = getSupabase() || supabase;
-        if (!activeClient) return;
-        const { data: playersData } = await activeClient
-          .from('players')
-          .select('*')
-          .eq('room_id', roomId)
-          .order('player_number', { ascending: true });
-        if (playersData) {
-          handlers.onPlayersUpdate(playersData as Player[]);
-        }
-        const { data: roomData } = await activeClient
-          .from('rooms')
-          .select('*')
-          .eq('id', roomId)
-          .maybeSingle();
-        if (roomData) {
-          handlers.onRoomUpdate(roomData as Room);
-        }
-      })
-      // Listen for Postgres database changes
-      .on(
-        'postgres_changes',
-        { event: '*', schema: 'public', table: 'rooms', filter: `id=eq.${roomId}` },
-        (change) => {
-          if (change.new) {
-            handlers.onRoomUpdate(change.new as Room);
-          }
-        }
-      )
-      .on(
-        'postgres_changes',
-        { event: '*', schema: 'public', table: 'players', filter: `room_id=eq.${roomId}` },
-        async () => {
-          const activeClient = getSupabase() || supabase;
-          if (!activeClient) return;
-          const { data } = await activeClient
-            .from('players')
-            .select('*')
-            .eq('room_id', roomId)
-            .order('player_number', { ascending: true });
-          if (data) {
-            handlers.onPlayersUpdate(data as Player[]);
-          }
-        }
-      )
-      .subscribe((status, err) => {
-        console.log(`[NKJxMNT REALTIME] Channel "game:${roomId}" status: ${status}`, err ? { message: err.message, name: err.name, stack: err.stack } : '');
-        if (status === 'SUBSCRIBED') {
-          handlers.onStatusChange('connected');
-        } else if (status === 'CHANNEL_ERROR' || status === 'TIMED_OUT' || status === 'CLOSED') {
-          handlers.onStatusChange('disconnected');
-          if (err) {
-            console.error('[NKJxMNT REALTIME] Subscription error details:', {
-              status,
-              message: err.message,
-              name: err.name,
-              stack: err.stack,
-            });
-          }
-        }
-      });
+    // Listen to Firebase Realtime Database connection status
+    const handleConnectedChange = (snap: { val: () => any }) => {
+      const isConnected = snap.val() === true;
+      handlers.onStatusChange(isConnected ? 'connected' : 'disconnected');
+    };
+    onValue(connectedRef, handleConnectedChange);
 
-    return () => {
-      const activeClient = getSupabase() || supabase;
-      if (activeClient) {
-        activeClient.removeChannel(channel);
+    // Listen to room value changes in real time
+    const handleRoomChange = (snap: { exists: () => boolean; val: () => FirebaseRoomState }) => {
+      if (!snap.exists()) {
+        handlers.onStatusChange('disconnected');
+        return;
       }
+
+      handlers.onStatusChange('connected');
+      const data = snap.val();
+
+      const formattedRoom = formatRoom(roomId, data);
+      const formattedPlayersList = formatPlayers(roomId, data);
+
+      handlers.onRoomUpdate(formattedRoom);
+      handlers.onPlayersUpdate(formattedPlayersList);
+
+      // Check lastEvent for real-time dice rolls, hops, or game restart
+      if (data.lastEvent && data.lastEvent.id) {
+        const eventId = data.lastEvent.id;
+        if (!processedEventsInSession.has(eventId) && !localProcessedEventIds.has(eventId)) {
+          processedEventsInSession.add(eventId);
+
+          if (data.lastEvent.type === 'ROLL_DICE' && data.lastEvent.playerNumber && data.lastEvent.diceValue) {
+            const payload: GameEventPayload = {
+              type: 'ROLL_DICE',
+              room_id: roomId,
+              player_number: data.lastEvent.playerNumber,
+              dice_value: data.lastEvent.diceValue,
+              steps: data.lastEvent.steps,
+              timestamp: data.lastEvent.timestamp,
+            };
+            handlers.onGameEvent(payload);
+          } else if (data.lastEvent.type === 'RESTART_GAME') {
+            const payload: GameEventPayload = {
+              type: 'RESTART_GAME',
+              room_id: roomId,
+              player_number: 1,
+              timestamp: data.lastEvent.timestamp,
+            };
+            handlers.onGameEvent(payload);
+          }
+        }
+      }
+    };
+
+    onValue(roomRef, handleRoomChange);
+
+    // Return cleanup callback
+    return () => {
+      off(roomRef, 'value', handleRoomChange);
+      off(connectedRef, 'value', handleConnectedChange);
     };
   }
 }
