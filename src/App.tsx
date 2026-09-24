@@ -64,7 +64,7 @@ export const App: React.FC = () => {
     }, duration);
   };
 
-  // Check URL parameters on mount (?room=XXXX or /game/XXXX)
+  // Check URL parameters and test backend connection on mount
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
     let codeFromUrl = params.get('room');
@@ -99,6 +99,26 @@ export const App: React.FC = () => {
             const msg = err instanceof Error ? err.message : 'Database error';
             showToast(`Could not load room "${code}": ${msg}`, 'info', 5000);
           });
+      }
+    } else {
+      // Landing page: verify Supabase backend connection so badge updates from "Connecting..."
+      if (isSupabaseConfigured()) {
+        MultiplayerService.checkConnection()
+          .then(({ ok, latencyMs, error }) => {
+            if (ok) {
+              setConnectionStatus('connected');
+              console.log(`[NKJxMNT] Landing page backend connection active (${latencyMs}ms)`);
+            } else {
+              setConnectionStatus('disconnected');
+              console.warn(`[NKJxMNT] Landing page backend check returned disconnected:`, error);
+            }
+          })
+          .catch((err) => {
+            setConnectionStatus('disconnected');
+            console.error('[NKJxMNT] Landing page connection check error:', err);
+          });
+      } else {
+        setConnectionStatus('demo');
       }
     }
   }, []);

@@ -1,4 +1,15 @@
-import { supabase, isSupabaseConfigured, getSupabase, logSupabaseDiagnostics, supabaseUrl, supabaseAnonKey, supabaseInitError } from '../lib/supabase';
+import {
+  supabase,
+  isSupabaseConfigured,
+  getSupabase,
+  logSupabaseDiagnostics,
+  supabaseUrl,
+  supabaseAnonKey,
+  supabaseInitError,
+  getKeyFormat,
+  getSupabaseProjectRef,
+  testSupabaseConnection,
+} from '../lib/supabase';
 import type { Player, PlayerNumber, Room, RoomStatus, GameEventPayload, MoveStep } from '../types/game';
 import { savePlayerSession, getSavedSession } from '../lib/storage';
 
@@ -17,12 +28,33 @@ function generateSessionToken(): string {
 
 export class MultiplayerService {
   /**
+   * Health check for connection status
+   */
+  static async checkConnection(): Promise<{
+    ok: boolean;
+    latencyMs: number;
+    error?: string;
+    restEndpoint: string;
+  }> {
+    return testSupabaseConnection();
+  }
+
+  /**
    * Create a new room with Player 1 in Supabase
    */
   static async createRoom(creatorName: string): Promise<{ room: Room; player: Player }> {
+    const projectRef = getSupabaseProjectRef(supabaseUrl);
+    const roomsEndpoint = `${supabaseUrl}/rest/v1/rooms`;
+    const keyFormat = getKeyFormat(supabaseAnonKey);
+
     console.log('[NKJxMNT] ========================================');
     console.log('[NKJxMNT] CREATE ROOM START');
     console.log('[NKJxMNT] Creator Name:', creatorName);
+    console.log('[NKJxMNT] Target Supabase Base URL:', supabaseUrl || '(none)');
+    console.log('[NKJxMNT] Target Supabase Project Ref:', projectRef || '(none)');
+    console.log('[NKJxMNT] Target REST Endpoint:', roomsEndpoint);
+    console.log('[NKJxMNT] Key Format:', keyFormat);
+    console.log('[NKJxMNT] Browser Online:', typeof navigator !== 'undefined' ? navigator.onLine : 'unknown');
 
     const client = getSupabase() || supabase;
 
@@ -45,61 +77,135 @@ export class MultiplayerService {
     const roomCode = generateRoomCode().trim().toUpperCase();
     const sessionToken = generateSessionToken();
 
-    console.log('[NKJxMNT] generated room code:', roomCode);
+    console.log('[NKJxMNT] Generated room code:', roomCode);
 
-    // 1. Insert room into public.rooms
-    const { data: roomData, error: roomError } = await client
-      .from('rooms')
-      .insert({
-        room_code: roomCode,
-        status: 'waiting',
-        current_turn: 1,
-      })
-      .select()
-      .single();
+    // 1. Insert room into public.rooms with detailed error diagnostics
+    let roomData: Room | null = null;
+    let roomError: any = null;
+    let nativeRoomError: Error | null = null;
 
-    if (roomError || !roomData) {
-      console.error('[NKJxMNT] Supabase room insert failure:', {
-        message: roomError?.message,
-        details: roomError?.details,
-        hint: roomError?.hint,
-        code: roomError?.code,
+    try {
+      console.log(`[NKJxMNT] Executing client.from('rooms').insert() -> ${roomsEndpoint}`);
+      const res = await client
+        .from('rooms')
+        .insert({
+          room_code: roomCode,
+          status: 'waiting',
+          current_turn: 1,
+        })
+        .select()
+        .single();
+      roomData = res.data;
+      roomError = res.error;
+    } catch (err: unknown) {
+      nativeRoomError = err instanceof Error ? err : new Error(String(err));
+      console.error('[NKJxMNT] Native exception during room INSERT:', {
+        name: nativeRoomError.name,
+        message: nativeRoomError.message,
+        isTypeError: nativeRoomError instanceof TypeError,
+        stack: nativeRoomError.stack,
       });
-      throw new Error(
-        `Failed to create room in Supabase: ${roomError?.message || 'No data returned'} (Code: ${roomError?.code || 'UNKNOWN'})`
-      );
     }
 
-    console.log('[NKJxMNT] Supabase room insert success');
-    console.log('[NKJxMNT] created room ID:', roomData.id);
+    if (nativeRoomError || roomError || !roomData) {
+      const activeError = nativeRoomError || roomError;
+      const isTypeError = activeError instanceof TypeError || activeError?.message?.includes('Failed to fetch');
+
+      console.error('[NKJxMNT] Supabase room insert failure diagnostics:', {
+        isTypeError,
+        message: activeError?.message,
+        details: activeError?.details,
+        hint: activeError?.hint,
+        code: activeError?.code,
+        name: activeError?.name,
+        stack: activeError?.stack,
+        endpoint: roomsEndpoint,
+        supabaseUrl,
+        projectRef,
+        keyFormat,
+        browserOnline: typeof navigator !== 'undefined' ? navigator.onLine : 'unknown',
+      });
+
+      let userFacingMessage = '';
+      if (isTypeError) {
+        userFacingMessage = `Failed to create room in Supabase: Network fetch failure (endpoint: ${roomsEndpoint}). Could not connect to Supabase. Check your Supabase project status, network connection, or URL configuration.`;
+      } else if (roomError?.code === '42P01') {
+        userFacingMessage = `Failed to create room in Supabase: Table "rooms" does not exist in your Supabase project. Please execute the "supabase/schema.sql" script in your Supabase SQL Editor.`;
+      } else if (roomError?.message) {
+        userFacingMessage = `Failed to create room in Supabase: ${roomError.message}${roomError.code ? ` (Code: ${roomError.code})` : ''}${roomError.hint ? ` - Hint: ${roomError.hint}` : ''}`;
+      } else {
+        userFacingMessage = `Failed to create room in Supabase: No room data returned from database.`;
+      }
+
+      throw new Error(userFacingMessage);
+    }
+
+    console.log('[NKJxMNT] Supabase room insert success. Room ID:', roomData.id);
 
     // 2. Insert Player 1 into public.players
-    const { data: playerData, error: playerError } = await client
-      .from('players')
-      .insert({
-        room_id: roomData.id,
-        name: creatorName.trim(),
-        player_number: 1,
-        position: 0,
-        session_token: sessionToken,
-        connected: true,
-      })
-      .select()
-      .single();
+    const playersEndpoint = `${supabaseUrl}/rest/v1/players`;
+    let playerData: Player | null = null;
+    let playerError: any = null;
+    let nativePlayerError: Error | null = null;
 
-    if (playerError || !playerData) {
-      console.error('[NKJxMNT] player insert failure:', {
-        message: playerError?.message,
-        details: playerError?.details,
-        hint: playerError?.hint,
-        code: playerError?.code,
+    try {
+      console.log(`[NKJxMNT] Executing client.from('players').insert() -> ${playersEndpoint}`);
+      const res = await client
+        .from('players')
+        .insert({
+          room_id: roomData.id,
+          name: creatorName.trim(),
+          player_number: 1,
+          position: 0,
+          session_token: sessionToken,
+          connected: true,
+        })
+        .select()
+        .single();
+      playerData = res.data;
+      playerError = res.error;
+    } catch (err: unknown) {
+      nativePlayerError = err instanceof Error ? err : new Error(String(err));
+      console.error('[NKJxMNT] Native exception during player INSERT:', {
+        name: nativePlayerError.name,
+        message: nativePlayerError.message,
+        isTypeError: nativePlayerError instanceof TypeError,
+        stack: nativePlayerError.stack,
       });
-      throw new Error(
-        `Failed to register player in Supabase: ${playerError?.message || 'Database error'} (Code: ${playerError?.code || 'UNKNOWN'})`
-      );
     }
 
-    console.log('[NKJxMNT] player insert success (Player 1 ID:', playerData.id, ')');
+    if (nativePlayerError || playerError || !playerData) {
+      const activeError = nativePlayerError || playerError;
+      const isTypeError = activeError instanceof TypeError || activeError?.message?.includes('Failed to fetch');
+
+      console.error('[NKJxMNT] Supabase player insert failure diagnostics:', {
+        isTypeError,
+        message: activeError?.message,
+        details: activeError?.details,
+        hint: activeError?.hint,
+        code: activeError?.code,
+        name: activeError?.name,
+        stack: activeError?.stack,
+        endpoint: playersEndpoint,
+        supabaseUrl,
+        projectRef,
+      });
+
+      let userFacingMessage = '';
+      if (isTypeError) {
+        userFacingMessage = `Failed to register player in Supabase: Network fetch failure (endpoint: ${playersEndpoint}).`;
+      } else if (playerError?.code === '42P01') {
+        userFacingMessage = `Failed to register player in Supabase: Table "players" does not exist. Please run supabase/schema.sql in your Supabase SQL Editor.`;
+      } else if (playerError?.message) {
+        userFacingMessage = `Failed to register player in Supabase: ${playerError.message}${playerError.code ? ` (Code: ${playerError.code})` : ''}${playerError.hint ? ` - Hint: ${playerError.hint}` : ''}`;
+      } else {
+        userFacingMessage = `Failed to register player in Supabase: No player data returned.`;
+      }
+
+      throw new Error(userFacingMessage);
+    }
+
+    console.log('[NKJxMNT] Player insert success (Player 1 ID:', playerData.id, ')');
     console.log('[NKJxMNT] CREATE ROOM SUCCESS');
     console.log('[NKJxMNT] ========================================');
 
@@ -119,10 +225,13 @@ export class MultiplayerService {
    * Join an existing room in Supabase
    */
   static async joinRoom(roomCode: string, playerName: string): Promise<{ room: Room; player: Player }> {
+    const formattedCode = roomCode.trim().toUpperCase();
+    const roomsEndpoint = `${supabaseUrl}/rest/v1/rooms?room_code=eq.${formattedCode}`;
+
     console.log('[NKJxMNT] ========================================');
     console.log('[NKJxMNT] JOIN ROOM START');
-    const formattedCode = roomCode.trim().toUpperCase();
-    console.log('[NKJxMNT] querying room code:', formattedCode);
+    console.log('[NKJxMNT] Querying room code:', formattedCode);
+    console.log('[NKJxMNT] Endpoint:', roomsEndpoint);
 
     const client = getSupabase() || supabase;
 
@@ -143,20 +252,39 @@ export class MultiplayerService {
     }
 
     // 1. Fetch room using select('*') and maybeSingle()
-    const { data: roomData, error: roomError } = await client
-      .from('rooms')
-      .select('*')
-      .eq('room_code', formattedCode)
-      .maybeSingle();
+    let roomData: Room | null = null;
+    let roomError: any = null;
+    let nativeRoomError: Error | null = null;
 
-    if (roomError) {
+    try {
+      const res = await client
+        .from('rooms')
+        .select('*')
+        .eq('room_code', formattedCode)
+        .maybeSingle();
+      roomData = res.data;
+      roomError = res.error;
+    } catch (err: unknown) {
+      nativeRoomError = err instanceof Error ? err : new Error(String(err));
+    }
+
+    if (nativeRoomError || roomError) {
+      const activeError = nativeRoomError || roomError;
+      const isTypeError = activeError instanceof TypeError || activeError?.message?.includes('Failed to fetch');
+
       console.error('[NKJxMNT] Supabase room select failure:', {
-        message: roomError.message,
-        details: roomError.details,
-        hint: roomError.hint,
-        code: roomError.code,
+        isTypeError,
+        message: activeError?.message,
+        details: activeError?.details,
+        hint: activeError?.hint,
+        code: activeError?.code,
+        name: activeError?.name,
       });
-      throw new Error(`Database error looking up room: ${roomError.message} (Code: ${roomError.code})`);
+
+      if (isTypeError) {
+        throw new Error(`Network failure querying room: Could not connect to Supabase (${supabaseUrl}/rest/v1/rooms).`);
+      }
+      throw new Error(`Database error looking up room: ${activeError?.message}${activeError?.code ? ` (Code: ${activeError.code})` : ''}`);
     }
 
     if (!roomData) {
@@ -519,12 +647,20 @@ export class MultiplayerService {
           }
         }
       )
-      .subscribe((status) => {
-        console.log(`[NKJxMNT] Supabase Realtime channel status: ${status}`);
+      .subscribe((status, err) => {
+        console.log(`[NKJxMNT REALTIME] Channel "game:${roomId}" status: ${status}`, err ? { message: err.message, name: err.name, stack: err.stack } : '');
         if (status === 'SUBSCRIBED') {
           handlers.onStatusChange('connected');
-        } else if (status === 'CHANNEL_ERROR' || status === 'TIMED_OUT') {
+        } else if (status === 'CHANNEL_ERROR' || status === 'TIMED_OUT' || status === 'CLOSED') {
           handlers.onStatusChange('disconnected');
+          if (err) {
+            console.error('[NKJxMNT REALTIME] Subscription error details:', {
+              status,
+              message: err.message,
+              name: err.name,
+              stack: err.stack,
+            });
+          }
         }
       });
 
